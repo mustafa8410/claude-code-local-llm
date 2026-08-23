@@ -1,0 +1,63 @@
+# claude-local-llm
+#
+#   docker compose up -d            # GPU (NVIDIA)
+#   docker compose --profile cpu up -d   # no GPU
+#
+# Then:
+#   eval "$(curl -s 'http://localhost:8787/admin/client-env?format=sh' | grep ^export)"
+#   claude --tools "Read,Edit,Grep,Glob,Bash"
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-local-llm:latest
+    ports:
+      - "8787:8787"
+    volumes:
+      # Model weights. Named volume so `docker compose pull` does not cost a re-download.
+      - llm-models:/models
+      # Edit the catalog without rebuilding.
+      - ./config/models.yaml:/app/config/models.yaml:ro
+    environment:
+      # Serve unrecognised model ids from whatever is already loaded. Claude Code's
+      # background slot uses a real Anthropic id that a local catalog never contains,
+      # so without this every side task evicts the main model and evicts it back.
+      BACKGROUND_STRATEGY: reuse-primary
+      # Unload after 15 min idle to give the GPU back.
+      IDLE_TTL_SECONDS: "900"
+      # full | coding | analysis | comma-separated tool list.
+      # Prefer `claude --tools "..."` client-side; this is for when you cannot change
+      # the launch command.
+      TOOL_PROFILE: "${TOOL_PROFILE:-full}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Same image, no GPU reservation. Usable, but expect single-digit tokens/sec.
+  gateway-cpu:
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: claude-local-llm:cpu
+    ports:
+      - "8787:8787"
+    volumes:
+      - llm-models:/models
+      - ./config/models.yaml:/app/config/models.yaml:ro
+    environment:
+      BACKGROUND_STRATEGY: reuse-primary
+      IDLE_TTL_SECONDS: "900"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    restart: unless-stopped
+
+volumes:
+  llm-models:

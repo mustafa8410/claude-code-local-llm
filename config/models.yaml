@@ -1,0 +1,94 @@
+# Model catalog.
+#
+# NAMING RULE - ids must satisfy two Claude Code behaviours that pull opposite ways,
+# and both fail silently if you get them wrong:
+#
+#   1. The id must CONTAIN "claude" or "anthropic". Claude Code filters the
+#      /v1/models response on that substring and drops everything else without a
+#      word, so the model never appears in the /model picker.
+#
+#   2. The id must NOT START WITH "claude-". CLAUDE_CODE_MAX_CONTEXT_TOKENS is how
+#      you tell Claude Code a local model's real context window; it applies directly
+#      only when the id does not lead with "claude-". If it does, that variable works
+#      only together with DISABLE_COMPACT (which turns compaction off entirely), so
+#      Claude Code assumes a 200K window and lets the conversation grow far past what
+#      a 16K-context local model can accept.
+#
+# Hence the "local-claude-" prefix used throughout. The registry loader enforces both
+# rules at startup rather than letting either fail quietly at runtime.
+#
+# EVERY MODEL SHIPPED HERE HAS `tools` IN ITS CAPABILITIES. Claude Code is a tool
+# loop, and a model whose chat template has no tool support does not degrade
+# gracefully - it fails as an opaque upstream error that Claude Code retries a dozen
+# times over. Models without tool support are documented in the README rather than
+# shipped in the picker. You can still add one here; the gateway will serve it and
+# flag it, but it will not drive Claude Code.
+#
+# tier:
+#   vram    - fits entirely in GPU memory. Fast.
+#   offload - spills into system RAM. Usable for MoE models with few active params.
+#   stretch - needs more memory than a default Docker Desktop / WSL2 VM is given.
+#             On Windows, raise the cap in %USERPROFILE%\.wslconfig or these stay
+#             marked unavailable. The gateway checks at startup and tells you the
+#             shortfall in GB rather than failing at load time.
+#
+# Sizes below are measured from the actual GGUF files, not estimated.
+
+models:
+  # ---------------------------------------------------------------- vram tier ----
+  - id: local-claude-qwen3.5-9b
+    display_name: "Qwen3.5 9B (UD-Q4_K_XL)"
+    hf: unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL
+    size_gb: 5.56
+    context: 16384
+    capabilities: [tools, thinking, vision]
+    tier: vram
+    default: true
+    # Verified on an RTX 3070 Ti Laptop (8 GB): 327 tok/s prefill, 56-60 tok/s decode,
+    # fully offloaded. Context is held at 16K so weights + KV fit beside the desktop.
+    args: ["-ngl", "999", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
+
+  - id: local-claude-qwen3.5-4b
+    display_name: "Qwen3.5 4B (UD-Q4_K_XL)"
+    hf: unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL
+    size_gb: 2.71
+    context: 32768
+    capabilities: [tools, thinking]
+    tier: vram
+    # Small enough to leave real room for context. Good background-model choice.
+    args: ["-ngl", "999", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
+
+  - id: local-claude-qwen3.5-2b
+    display_name: "Qwen3.5 2B (UD-Q4_K_XL)"
+    hf: unsloth/Qwen3.5-2B-GGUF:UD-Q4_K_XL
+    size_gb: 1.25
+    context: 32768
+    capabilities: [tools]
+    tier: vram
+    # Fast, but too small to sustain a long agent loop on its own.
+    args: ["-ngl", "999", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
+
+  # ------------------------------------------------------------- stretch tier ----
+  - id: local-claude-qwen3.6-35b-a3b
+    display_name: "Qwen3.6 35B-A3B (UD-Q3_K_XL) - best quality"
+    hf: unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_XL
+    size_gb: 15.69
+    context: 16384
+    capabilities: [tools, thinking]
+    tier: stretch
+    # 73.4% SWE-bench Verified and native tool calling - the best model here that is
+    # reachable at all on 8 GB. Only ~3B params are active per token, so keeping all
+    # expert weights on the CPU and attention on the GPU stays usable.
+    # Reviewers note it can lose the thread on very long agent runs.
+    args: ["-ngl", "999", "--n-cpu-moe", "99", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
+
+  - id: local-claude-qwen3.5-27b
+    display_name: "Qwen3.5 27B (UD-Q4_K_XL)"
+    hf: unsloth/Qwen3.5-27B-GGUF:UD-Q4_K_XL
+    size_gb: 16.41
+    context: 8192
+    capabilities: [tools, thinking]
+    tier: stretch
+    # Dense, so every parameter is touched per token. Expect single-digit tok/s once
+    # it spills to RAM. Listed because it fits; not because it will feel good.
+    args: ["-ngl", "999", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
