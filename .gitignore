@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.tools/
+models/
+*.gguf
+.env
+test/fixtures/capture/
+i-want-to-create-tender-otter.md
+run-gateway.sh
+.claude/

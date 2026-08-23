@@ -1,0 +1,12 @@
+node_modules
+dist
+.tools
+models
+test
+.git
+.gitignore
+*.md
+!README.md
+.env
+run-gateway.sh
+.claude/
