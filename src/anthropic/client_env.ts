@@ -14,6 +14,9 @@
  * Publishing them from the registry means the numbers come from the same source of
  * truth the backend is launched with, instead of being copied into a README and
  * going stale the moment someone edits models.yaml.
+ *
+ * EVERY MODEL SLOT IS PINNED TO THE SAME ID. See MODEL_SLOTS below - the repetition
+ * is the point, not an oversight.
  */
 
 import type { ServerResponse } from "node:http";
@@ -23,6 +26,37 @@ import type { Config } from "../config.ts";
 /** Fraction of the window handed to output; the rest is prompt headroom. */
 const OUTPUT_SHARE = 0.25;
 const MIN_OUTPUT = 1024;
+
+/**
+ * Every variable through which Claude Code can name a model. All of them are set to
+ * the SAME id, and that is deliberate.
+ *
+ * Claude Code drives several model slots - main, the Opus/Sonnet/Haiku tier aliases,
+ * and a subagent slot. A hosted provider can point them at different models because
+ * every model is resident at once. We hold exactly one model in VRAM, so naming a
+ * second one anywhere here means the slot that uses it is a genuine, explicitly
+ * requested id: `fellBack` is false, RequestContext.chooseTarget honours it verbatim,
+ * and the backend swaps. The next main-slot request swaps back. That is a 10-90s
+ * eviction per turn - precisely the thrash BACKGROUND_STRATEGY=reuse-primary exists to
+ * prevent, and reuse-primary CANNOT prevent it here, because it only engages for ids
+ * the registry does not recognise.
+ *
+ * Pinning every slot also removes a fragile assumption. Without these, correct
+ * behaviour depends on Claude Code's background slot happening to send an id we do not
+ * recognise - an inference about another program's defaults, which can change under
+ * us. Pinned, every slot sends a known id, nothing ever falls back, and reuse-primary
+ * becomes a safety net rather than the load-bearing mechanism.
+ *
+ * Serving two models at once would need a second llama-server process and combined
+ * VRAM accounting; the supervisor is built around exactly one backend.
+ */
+const MODEL_SLOTS = [
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+] as const;
 
 export function buildClientEnv(
   registry: Registry,
@@ -35,7 +69,8 @@ export function buildClientEnv(
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: "http://localhost:" + cfg.port,
     ANTHROPIC_AUTH_TOKEN: "local-gateway",
-    ANTHROPIC_MODEL: model.id,
+    // Every model slot, same id. The repetition is load-bearing; see MODEL_SLOTS.
+    ...Object.fromEntries(MODEL_SLOTS.map((k) => [k, model.id] as const)),
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.context),
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(output),
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
