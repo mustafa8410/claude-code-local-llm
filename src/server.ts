@@ -84,8 +84,26 @@ async function route(
 
   if (path === "/health" && method === "GET") {
     const status = ctx.supervisor.status();
-    sendJson(res, 200, {
-      status: status.state === "ready" ? "ok" : status.state,
+    const models = ctx.registry.list();
+    const available = models.filter((m) => m.available).length;
+
+    // The status code has to mean something: Docker's HEALTHCHECK tests only that, so
+    // answering 200 with "everything is unavailable" in the body reports a container
+    // as healthy when it can serve nothing at all.
+    //
+    // `idle` stays healthy on purpose - it is the normal resting state after the
+    // idle-TTL unload, and flapping on it would restart a container that is working.
+    // The condition that genuinely means "cannot serve" is having no loadable model,
+    // which is exactly the no-GPU and out-of-memory case.
+    const serviceable = available > 0;
+    sendJson(res, serviceable ? 200 : 503, {
+      status: serviceable
+        ? status.state === "ready"
+          ? "ok"
+          : status.state
+        : "no_models_available",
+      serviceable,
+      models: { total: models.length, available },
       backend: status,
       recent: ctx.supervisor.recentLogs().slice(-12),
     });
@@ -172,13 +190,30 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   setLogLevel(cfg.logLevel);
 
-  const resources = await probeResources(cfg.serverBin);
+  const resources = await probeResources(cfg.serverBin, cfg.memoryBudgetGb);
   log.info("host resources", {
     vramTotalMb: resources.vramTotalMb ?? "none",
     ramTotalMb: resources.ramTotalMb,
+    ramSource: cfg.memoryBudgetGb === null ? "detected" : "MEMORY_BUDGET_GB",
   });
+
+  // Refuse rather than serve slowly. A 9B on CPU answers at roughly 2 tok/s, which a
+  // user reads as a broken gateway, not a slow one - and the overwhelmingly likely
+  // cause is a missing --gpus all rather than a deliberate choice to run on CPU.
+  // Failing here names the fix; starting anyway hides it behind a bad experience.
+  if (resources.vramTotalMb === null && !cfg.allowCpu) {
+    log.error("no GPU detected - refusing to start", {
+      docker: "pass --gpus all (and install the NVIDIA Container Toolkit on Linux)",
+      driver: "check nvidia-smi on the host; the CUDA image must match its driver",
+      laptop: "a discrete GPU switched off for power saving reports no devices",
+      override: "set ALLOW_CPU=1 to run on CPU anyway, accepting single-digit tok/s",
+    });
+    process.exit(1);
+  }
   if (resources.vramTotalMb === null) {
-    log.warn("no GPU detected; models will run on CPU and will be slow");
+    log.warn("no GPU detected and ALLOW_CPU=1 is set; continuing on CPU", {
+      expect: "single-digit tokens/sec; prefer the smallest model in the catalog",
+    });
   }
 
   const registry = await Registry.load(cfg.registryPath, resources);
@@ -192,6 +227,23 @@ async function main(): Promise<void> {
     log.warn("model unavailable on this host", {
       model: m.id,
       reason: m.unavailableReason ?? "unknown",
+    });
+  }
+
+  // Never let the default change silently: the picker and every unrecognised id follow
+  // it, so a user who reads the catalog and gets a different model deserves the reason.
+  const marked = registry.getMarkedDefaultId();
+  if (marked !== null && marked !== registry.getDefaultId()) {
+    log.warn("catalog default cannot run here; using the largest model that fits", {
+      catalogDefault: marked,
+      using: registry.getDefaultId() ?? "none",
+      reason: registry.get(marked)?.unavailableReason ?? "unknown",
+    });
+  }
+  if (registry.list().every((m) => !m.available)) {
+    log.error("no model in the catalog can run on this host", {
+      hint: "raise the memory budget, add a smaller model, or check GPU passthrough",
+      health: "/health will report 503 until at least one model fits",
     });
   }
 

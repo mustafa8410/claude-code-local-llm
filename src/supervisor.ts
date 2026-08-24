@@ -127,13 +127,21 @@ export class Supervisor {
 
     if (this.isServing(model.id)) return;
 
-    if (this.pending) {
-      const waitingFor = this.pending.id;
-      onProgress?.("waiting for in-flight load of " + waitingFor);
-      // Whether or not it is our target, let the in-flight swap settle first.
-      // Racing two spawns onto one GPU is how you get a CUDA OOM.
-      await this.pending.promise.catch(() => undefined);
-      if (waitingFor === model.id && this.isServing(model.id)) return;
+    // Drain EVERY in-flight swap, not just the first one observed.
+    //
+    // Checking `pending` once was not enough. With a load for A in flight and requests
+    // for B and C both parked on its promise, A settles, both continuations resume,
+    // both find `waitingFor !== their id`, and both fall through to start a swap - two
+    // llama-server processes racing onto one GPU, which is the exact CUDA OOM this
+    // class exists to prevent. Re-checking in a loop means the second waiter observes
+    // the first one's swap and parks on that instead.
+    while (this.pending) {
+      const inFlight = this.pending;
+      onProgress?.("waiting for in-flight load of " + inFlight.id);
+      await inFlight.promise.catch(() => undefined);
+      if (this.isServing(model.id)) return;
+      // Nobody queued a new swap while we waited, so it is our turn.
+      if (this.pending === inFlight) break;
     }
 
     if (this.isServing(model.id)) return;
@@ -234,6 +242,7 @@ export class Supervisor {
     this.spawnCount++;
 
     let exited: { code: number | null } | null = null;
+    let spawnError: Error | null = null;
     child.on("exit", (code) => {
       exited = { code };
       if (this.child === child) {
@@ -244,8 +253,14 @@ export class Supervisor {
         }
       }
     });
+    // Node emits 'error' INSTEAD OF 'exit' when the process could never be spawned at
+    // all - a missing binary, a bad path, no execute permission. Only logging it left
+    // `exited` null, so the readiness loop below polled a port nothing was listening on
+    // for the full 15-minute LOAD_TIMEOUT_MS and then blamed the model for being slow.
+    // A typo in LLAMA_SERVER_BIN should fail in milliseconds and say so.
     child.on("error", (err) => {
-      log.error("spawn failed", { err: err.message });
+      spawnError = err;
+      log.error("spawn failed", { bin: this.cfg.serverBin, err: err.message });
     });
 
     const capture = (buf: Buffer) => {
@@ -267,6 +282,23 @@ export class Supervisor {
     let lastProgress = 0;
 
     while (Date.now() < deadline) {
+      if (spawnError !== null) {
+        const err = spawnError as Error;
+        const code = (err as NodeJS.ErrnoException).code;
+        // Clear state directly rather than calling stop(). There is no process to
+        // terminate - it never started - so stop() would kill a pid that does not
+        // exist and then wait out EXIT_GRACE_MS plus the SIGKILL race for an 'exit'
+        // event that can never arrive, turning an instant failure into a 15s one.
+        this.child = null;
+        this.current = null;
+        this.setState("idle", "llama-server could not be spawned");
+        throw GatewayError.internal(
+          "could not start llama-server at " + this.cfg.serverBin + ": " + err.message +
+            (code === "ENOENT"
+              ? " (binary not found - set LLAMA_SERVER_BIN to its full path)"
+              : ""),
+        );
+      }
       if (exited !== null) {
         const tail = this.stderrTail.slice(-8).join(" | ");
         const code = (exited as { code: number | null }).code;

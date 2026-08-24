@@ -21,6 +21,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { once } from "node:events";
 import { GatewayError, sseErrorEvent, toEnvelope } from "./errors.ts";
 import { buildUpstreamRequest } from "../sanitize.ts";
 import { pruneTools } from "../tools/prune.ts";
@@ -168,6 +169,19 @@ async function forward(
     contextWindow: entry.context,
   });
 
+  // Propagate client cancellation upstream.
+  //
+  // Without this, pressing Esc in Claude Code closed the socket while llama-server
+  // carried on generating to completion - the GPU stayed busy producing tokens with
+  // nowhere to go, and the model stayed pinned in VRAM because the request never
+  // finished and the idle timer never rearmed. 'close' fires on the response for both
+  // a client disconnect and a normal end; `res.writableEnded` distinguishes them.
+  const abort = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) abort.abort();
+  };
+  res.once("close", onClose);
+
   let upstream: Response;
   try {
     upstream = await fetch(ctx.supervisor.backendUrl + "/v1/messages", {
@@ -177,8 +191,15 @@ async function forward(
         authorization: "Bearer " + ctx.config.backendApiKey,
       },
       body: JSON.stringify(upstreamBody),
+      signal: abort.signal,
     });
   } catch (err) {
+    res.removeListener("close", onClose);
+    if (abort.signal.aborted) {
+      log.debug("client disconnected before the backend responded");
+      if (!res.writableEnded) res.end();
+      return;
+    }
     const wrapped = GatewayError.internal(
       "backend unreachable: " + (err instanceof Error ? err.message : String(err)),
     );
@@ -235,17 +256,27 @@ async function forward(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (res.writableEnded) break;
+      if (res.writableEnded || abort.signal.aborted) break;
       if (!res.write(Buffer.from(value))) {
-        await new Promise<void>((resolve) => res.once("drain", resolve));
+        // Wait for the socket to drain, but never unconditionally: on a destroyed
+        // socket 'drain' never fires, and awaiting it forever stranded the handler.
+        // trackEnd() would never run, inflight would stay above zero, and the idle
+        // timer would never rearm - pinning the model in VRAM for the life of the
+        // process. Aborting the signal rejects this wait.
+        await once(res, "drain", { signal: abort.signal });
       }
     }
   } catch (err) {
-    log.warn("relay interrupted", {
-      err: err instanceof Error ? err.message : String(err),
-    });
-    if (isStream && !res.writableEnded) res.write(sseErrorEvent(err));
+    if (abort.signal.aborted) {
+      log.debug("client disconnected mid-stream; upstream generation aborted");
+    } else {
+      log.warn("relay interrupted", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      if (isStream && !res.writableEnded) res.write(sseErrorEvent(err));
+    }
   } finally {
+    res.removeListener("close", onClose);
     reader.cancel().catch(() => undefined);
     if (!res.writableEnded) res.end();
   }

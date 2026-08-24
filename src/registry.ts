@@ -44,10 +44,40 @@ export class Registry {
 
   private constructor(models: ResolvedModel[]) {
     for (const m of models) this.byId.set(m.id.toLowerCase(), m);
-    this.defaultId = models.find((m) => m.default)?.id
-      ?? models.find((m) => m.available)?.id
-      ?? models[0]?.id
-      ?? null;
+    this.defaultId = Registry.pickDefault(models);
+  }
+
+  /**
+   * Choose the model every unresolved id falls back to.
+   *
+   * The catalog's `default: true` only wins if it can actually LOAD here. It used to
+   * win unconditionally, which broke the constrained hosts it most needed to serve: on
+   * a machine where the default does not fit, `resolve()` handed it back for every
+   * unrecognised id, and since Claude Code's background slot always sends one of those,
+   * a session spent itself on 400s naming a model that was never going to run.
+   *
+   * When the marked default cannot run, take the LARGEST model that can. Size tracks
+   * quality closely enough within one catalog, and the alternative - first in file
+   * order - makes the choice depend on how the YAML happens to be sorted. The
+   * substitution is logged by the caller, never silent.
+   */
+  private static pickDefault(models: ResolvedModel[]): string | null {
+    const marked = models.find((m) => m.default);
+    if (marked && marked.available) return marked.id;
+
+    const largestAvailable = models
+      .filter((m) => m.available)
+      .sort((a, b) => b.size_gb - a.size_gb)[0];
+    if (largestAvailable) return largestAvailable.id;
+
+    // Nothing fits. Keep a default anyway so /v1/models and /admin/client-env still
+    // answer with something coherent; every load attempt will fail with the shortfall.
+    return marked?.id ?? models[0]?.id ?? null;
+  }
+
+  /** The catalog's `default: true`, whether or not it can run. For startup logging. */
+  getMarkedDefaultId(): string | null {
+    return [...this.byId.values()].find((m) => m.default)?.id ?? null;
   }
 
   static async load(path: string, res: HostResources): Promise<Registry> {

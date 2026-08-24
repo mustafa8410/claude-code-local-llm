@@ -28,6 +28,19 @@ export interface Config {
   backendApiKey: string;
   /** Require a non-empty client credential. Off by default for localhost use. */
   requireAuth: boolean;
+  /**
+   * Override the detected RAM budget, in GB. Detection is least reliable exactly
+   * where it matters: WSL2 hands its VM a share of host RAM that neither
+   * `os.totalmem()` nor the cgroup limit describes.
+   */
+  memoryBudgetGb: number | null;
+  /**
+   * Start anyway when no GPU is detected. Off by default: a 9B model on CPU answers at
+   * roughly 2 tok/s, which reads as a broken gateway rather than a slow one, and the
+   * overwhelmingly likely cause is a missing `--gpus all` rather than a deliberate
+   * choice. Refusing loudly at startup points at that; serving slowly hides it.
+   */
+  allowCpu: boolean;
   toolProfile: string | null;
   captureDir: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -38,6 +51,16 @@ function envInt(name: string, fallback: number): number {
   if (raw === undefined || raw === "") return fallback;
   const n = Number.parseInt(raw, 10);
   if (Number.isNaN(n)) throw new Error(`${name} must be an integer, got ${JSON.stringify(raw)}`);
+  return n;
+}
+
+function envFloat(name: string, fallback: number | null): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n) || n <= 0) {
+    throw new Error(`${name} must be a positive number, got ${JSON.stringify(raw)}`);
+  }
   return n;
 }
 
@@ -75,6 +98,8 @@ export function loadConfig(): Config {
     ),
     backendApiKey: randomBytes(24).toString("hex"),
     requireAuth: envBool("REQUIRE_AUTH", false),
+    memoryBudgetGb: envFloat("MEMORY_BUDGET_GB", null),
+    allowCpu: envBool("ALLOW_CPU", false),
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,
     logLevel: envEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),

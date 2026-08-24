@@ -50,14 +50,45 @@ export async function listGpuDevices(serverBin: string): Promise<GpuDevice[]> {
   }
 }
 
-export async function probeResources(serverBin: string): Promise<HostResources> {
+const MB = 1024 * 1024;
+
+/**
+ * Total RAM this process may actually use, in MB.
+ *
+ * `os.totalmem()` reports the host - or, under Docker Desktop, the WSL2 VM - and
+ * ignores cgroup limits entirely. A container started with `--memory=8g` on a 64 GB
+ * host would therefore believe it has 64 GB, mark a model that cannot possibly fit as
+ * available, load it, and be OOM-killed by the kernel: exit code 137, no log line, no
+ * explanation anywhere in our output.
+ *
+ * `process.constrainedMemory()` returns the cgroup limit under both v1 and v2, or 0
+ * when the process is unconstrained, so the smaller of the two is the honest figure.
+ * An explicit MEMORY_BUDGET_GB wins over both, because detection is unreliable exactly
+ * where it matters most - WSL2 hands the VM a share of host RAM that neither number
+ * describes.
+ */
+function totalRamMb(overrideGb: number | null): number {
+  if (overrideGb !== null && overrideGb > 0) return Math.round(overrideGb * 1024);
+
+  const hostMb = Math.round(os.totalmem() / MB);
+  const constrained = process.constrainedMemory();
+  if (typeof constrained === "number" && constrained > 0) {
+    return Math.min(hostMb, Math.round(constrained / MB));
+  }
+  return hostMb;
+}
+
+export async function probeResources(
+  serverBin: string,
+  memoryBudgetGb: number | null = null,
+): Promise<HostResources> {
   const devices = await listGpuDevices(serverBin);
   const primary = devices[0];
   return {
     vramTotalMb: primary ? primary.totalMb : null,
     vramFreeMb: primary ? primary.freeMb : null,
-    ramTotalMb: Math.round(os.totalmem() / (1024 * 1024)),
-    ramFreeMb: Math.round(os.freemem() / (1024 * 1024)),
+    ramTotalMb: totalRamMb(memoryBudgetGb),
+    ramFreeMb: Math.round(os.freemem() / MB),
   };
 }
 
@@ -75,8 +106,22 @@ export function checkFit(
   // Weights plus KV cache plus CUDA compute buffers. The headroom factor is
   // deliberately conservative; a model that "just fits" thrashes.
   const needMb = sizeMb * 1.15;
+  const hasGpu = res.vramTotalMb !== null;
 
-  if (tier === "vram") {
+  // A vram-tier model is held to the VRAM budget only when there IS a GPU.
+  //
+  // Judging it against zero on a GPU-less host marks the ENTIRE catalog unavailable,
+  // so the gateway starts, answers /health, lists every model, and then 400s every
+  // single request. That is not a rare configuration: it is what happens when
+  // --gpus all is omitted, when the NVIDIA Container Toolkit is missing, when the
+  // CUDA base image does not match the host driver, when the discrete GPU is switched
+  // off to save power, and on every macOS host that pulls the published image.
+  //
+  // So fall through to the RAM budget instead, which keeps the host serviceable and
+  // makes the shortfall message honest. Whether the gateway is ALLOWED to run this way
+  // is a separate question, decided once at startup rather than per model - see the
+  // ALLOW_CPU gate in server.ts.
+  if (tier === "vram" && hasGpu) {
     const haveMb = res.vramTotalMb ?? 0;
     const shortMb = needMb - haveMb;
     return shortMb <= 0
@@ -88,16 +133,24 @@ export function checkFit(
         };
   }
 
-  // offload and stretch may spill into system RAM.
+  // offload and stretch may spill into system RAM - and so may a vram-tier model on a
+  // host with no GPU at all, where every layer runs on the CPU regardless of tier.
   const haveMb = (res.vramTotalMb ?? 0) + res.ramTotalMb;
   const shortMb = needMb - haveMb;
-  return shortMb <= 0
-    ? { fits: true, shortfallGb: 0, note: "fits across VRAM + RAM" }
-    : {
-        fits: false,
-        shortfallGb: round1(shortMb / 1024),
-        note: `needs ~${round1(needMb / 1024)} GB across VRAM+RAM, host has ${round1(haveMb / 1024)} GB`,
-      };
+  if (shortMb > 0) {
+    return {
+      fits: false,
+      shortfallGb: round1(shortMb / 1024),
+      note: hasGpu
+        ? `needs ~${round1(needMb / 1024)} GB across VRAM+RAM, host has ${round1(haveMb / 1024)} GB`
+        : `needs ~${round1(needMb / 1024)} GB RAM, host has ${round1(haveMb / 1024)} GB and no GPU`,
+    };
+  }
+  return {
+    fits: true,
+    shortfallGb: 0,
+    note: hasGpu ? "fits across VRAM + RAM" : "fits in RAM (no GPU - CPU inference, slow)",
+  };
 }
 
 function round1(n: number): number {

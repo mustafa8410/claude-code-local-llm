@@ -130,3 +130,60 @@ test("tool pruning is deterministic and order-preserving", () => {
     ["Read", "Bash"],
   );
 });
+
+test("the catalog default is skipped when it cannot run on this host", async () => {
+  // Regression: the default was `models.find(m => m.default)` with no availability
+  // test, so a constrained host kept a model that could never load as the answer to
+  // every unrecognised id - and Claude Code's background slot sends an unrecognised id
+  // on every side task. A session spent itself on 400s naming a model that was never
+  // going to run, on a host that had two perfectly good alternatives.
+  const file = writeRegistry(`
+models:
+  - id: local-claude-huge
+    hf: o/r:Q4
+    size_gb: 400
+    context: 8192
+    capabilities: [tools]
+    tier: vram
+    default: true
+  - id: local-claude-small
+    hf: o/r:Q4
+    size_gb: 1
+    context: 8192
+    capabilities: [tools]
+    tier: vram
+  - id: local-claude-medium
+    hf: o/r:Q4
+    size_gb: 4
+    context: 8192
+    capabilities: [tools]
+    tier: vram
+`);
+  const reg = await Registry.load(file, HOST);
+
+  assert.equal(
+    reg.getDefaultId(),
+    "local-claude-medium",
+    "the largest model that fits, not merely the first one in file order",
+  );
+  assert.equal(
+    reg.getMarkedDefaultId(),
+    "local-claude-huge",
+    "the catalog's own marking stays reportable so the swap can be logged",
+  );
+  assert.equal(reg.resolve("claude-sonnet-4-5").model.id, "local-claude-medium");
+});
+
+test("a default that fits is left exactly as the catalog asked", async () => {
+  const reg = await Registry.load(writeRegistry(VALID), HOST);
+  assert.equal(reg.getDefaultId(), "local-claude-test");
+  assert.equal(reg.getMarkedDefaultId(), "local-claude-test");
+});
+
+test("when nothing fits, a default still resolves so endpoints can explain why", async () => {
+  // Returning null here would make /v1/models and /admin/client-env throw instead of
+  // reporting the shortfall, which is the one thing a user in this state needs.
+  const reg = await Registry.load(writeRegistry(VALID.replace("size_gb: 1", "size_gb: 400")), HOST);
+  assert.equal(reg.getDefaultId(), "local-claude-test");
+  assert.ok(reg.list().every((m) => !m.available));
+});
