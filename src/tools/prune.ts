@@ -66,9 +66,3 @@ function resolveAllowList(profile: string): Set<string> | null {
   }
   return null;
 }
-
-/** Rough byte accounting for /admin/metrics, so the effect is observable. */
-export function measureTools(tools: ToolDef[] | undefined): number {
-  if (!tools || tools.length === 0) return 0;
-  return Buffer.byteLength(JSON.stringify(tools), "utf8");
-}

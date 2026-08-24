@@ -7,6 +7,7 @@
  */
 
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { loadConfig, type Config } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
@@ -45,24 +46,51 @@ function sendError(res: ServerResponse, err: unknown): void {
   sendJson(res, status, body);
 }
 
-/**
- * Credential check. Off by default: the gateway is meant to be reached over
- * loopback, and requiring a token there is friction with no attacker excluded. Set
- * REQUIRE_AUTH=1 when exposing the port beyond the host.
- */
-function checkAuth(req: IncomingMessage, cfg: Config): void {
-  if (!cfg.requireAuth) return;
+/** The credential the caller presented, by either accepted header. */
+function presentedCredential(req: IncomingMessage): string {
   const auth = req.headers.authorization;
-  const apiKey = req.headers["x-api-key"];
   const bearer = typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")
     ? auth.slice(7).trim()
     : "";
-  const key = typeof apiKey === "string" ? apiKey.trim() : "";
-  if (bearer === "" && key === "") {
+  if (bearer !== "") return bearer;
+  const apiKey = req.headers["x-api-key"];
+  return typeof apiKey === "string" ? apiKey.trim() : "";
+}
+
+/**
+ * Compare in constant time. Hashing first gives both sides a fixed 32 bytes, which
+ * keeps timingSafeEqual from throwing on a length mismatch - and stops the length of
+ * the real secret leaking through which comparisons throw and which do not.
+ */
+function secretsMatch(presented: string, expected: string): boolean {
+  const a = createHash("sha256").update(presented, "utf8").digest();
+  const b = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * Credential check. Off by default: the gateway is meant to be reached over loopback,
+ * and requiring a token there is friction with no attacker excluded.
+ *
+ * When it IS on, it compares against GATEWAY_API_KEY. It previously only checked that
+ * some non-empty token had been sent, which is not authentication - any caller who
+ * could reach the port could satisfy it by sending the word "x". That mattered because
+ * REQUIRE_AUTH is precisely the setting a user reaches for when publishing the port.
+ * loadConfig now refuses to start with REQUIRE_AUTH=1 and no key, so `gatewayApiKey`
+ * is non-null whenever `requireAuth` is true.
+ */
+function checkAuth(req: IncomingMessage, cfg: Config): void {
+  if (!cfg.requireAuth) return;
+
+  const token = presentedCredential(req);
+  if (token === "") {
     throw GatewayError.unauthorized(
       "missing credential: set ANTHROPIC_AUTH_TOKEN (sent as Authorization: Bearer) " +
         "or ANTHROPIC_API_KEY (sent as x-api-key)",
     );
+  }
+  if (cfg.gatewayApiKey === null || !secretsMatch(token, cfg.gatewayApiKey)) {
+    throw GatewayError.unauthorized("invalid credential");
   }
 }
 
@@ -126,6 +154,14 @@ async function route(
     checkAuth(req, ctx.config);
     await handleCountTokens(req, res, ctx);
     return;
+  }
+
+  // Everything under /admin needs the same credential as /v1. It used to need none at
+  // all, which mattered most for preload: an unauthenticated caller who could reach the
+  // port could spawn a model and occupy the GPU. client-env also hands out the auth
+  // token, so leaving it open would have published the key that guards everything else.
+  if (path.startsWith("/admin/")) {
+    checkAuth(req, ctx.config);
   }
 
   if (path === "/admin/models" && method === "GET") {

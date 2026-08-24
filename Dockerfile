@@ -1,11 +1,21 @@
-# claude-local-llm - GPU (CUDA) image.
+# claude-local-llm - one Dockerfile, GPU or CPU.
 #
 # One container, one port, one process tree: the Node gateway supervises llama-server
 # as a child process. That is what makes the swap path work - stopping and starting a
 # backend is a local operation, not an orchestration problem.
 #
-#   docker build -t claude-local-llm .
-#   docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
+#   GPU (default):
+#     docker build -t claude-local-llm .
+#     docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
+#
+#   CPU (expect single-digit tokens/sec; the gateway also needs ALLOW_CPU=1):
+#     docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server \
+#       -t claude-local-llm:cpu .
+#     docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm:cpu
+#
+# The two variants differ ONLY in the base image, so they share this file. They used to
+# be two files whose 87 lines had to be kept identical by hand - which is a bug waiting
+# for the day someone edits one of them.
 #
 # Weights are NOT baked in. llama-server downloads them into LLAMA_CACHE on first use,
 # so the image stays image-sized and the volume survives upgrades.
@@ -21,9 +31,20 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # -------------------------------------------------------------- runtime stage ----
-# The official llama.cpp CUDA image already carries llama-server and the CUDA runtime,
-# so we never compile llama.cpp ourselves. Use :server-cuda13 for CUDA 13 drivers.
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda AS runtime
+# The official llama.cpp image already carries llama-server and, for the CUDA variant,
+# the CUDA runtime - so we never compile llama.cpp ourselves.
+#
+#   :server-cuda    CUDA 12 drivers (default)
+#   :server-cuda13  CUDA 13 drivers
+#   :server         CPU only
+#
+# PIN THIS BEFORE PUBLISHING. The tag floats, and src/resources.ts parses the exact
+# text of `llama-server --list-devices` to discover VRAM. A base-image rebase that
+# reformats that output makes every model look unavailable, with nothing in our logs
+# pointing at the cause. Pin by digest once a build is verified:
+#   BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest>
+ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
+FROM ${BASE_IMAGE} AS runtime
 
 ARG NODE_VERSION=22.20.0
 
@@ -35,10 +56,13 @@ RUN set -eux; \
     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz; \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; \
     rm /tmp/node.tar.xz; \
-    apt-get purge -y xz-utils; \
+    apt-get purge -y curl xz-utils; \
     apt-get autoremove -y; \
     rm -rf /var/lib/apt/lists/*; \
     node --version
+# curl and xz-utils exist only to fetch and unpack that tarball, so both are purged.
+# ca-certificates stays - llama-server needs it to download weights over HTTPS - and
+# the healthcheck uses node's fetch rather than curl, so nothing at runtime wants it.
 
 # The base image's llama-server location is an implementation detail of that image and
 # has moved between releases. Resolve it at build time and pin a stable path, so a

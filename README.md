@@ -189,7 +189,7 @@ but Claude Code's agent loop will not work:
 | `POST /v1/messages` | inference (also `?beta=true`) |
 | `POST /v1/messages/count_tokens` | token counting; estimates rather than forcing a load |
 | `GET /v1/models` | discovery for the `/model` picker |
-| `HEAD /api/hello` | connection-warming probe |
+| `/api/hello` | connection-warming probe; answers any method |
 | `GET /health` | state, backend status, recent backend logs |
 | `GET /admin/models` | catalog with capability and availability flags |
 | `GET /admin/client-env` | the exact Claude Code config for a model (`?format=sh\|ps1`) |
@@ -208,7 +208,10 @@ but Claude Code's agent loop will not work:
 | `IDLE_TTL_SECONDS` | `900` | unload after idle; `0` disables |
 | `BACKGROUND_STRATEGY` | `reuse-primary` | how an unrecognised model id is handled |
 | `TOOL_PROFILE` | unset | `full` \| `coding` \| `analysis` \| comma-separated list |
-| `REQUIRE_AUTH` | `0` | require a client credential |
+| `GATEWAY_API_KEY` | unset | secret clients must send; setting it enables auth |
+| `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
+| `ALLOW_CPU` | `0` | start without a GPU, accepting single-digit tokens/sec |
+| `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
 | `CAPTURE_DIR` | unset | record request bodies for contract tests |
 
 `BACKGROUND_STRATEGY` exists because Claude Code drives two model slots — a main model
@@ -216,6 +219,59 @@ and a background one for side tasks. The background slot defaults to a real Anth
 id that a local catalog never contains, so without this every side task would evict
 the main model and evict it back. `reuse-primary` serves unrecognised ids from
 whatever is already loaded. An **explicitly chosen** id is always honoured.
+
+`GATEWAY_API_KEY` is the secret; `REQUIRE_AUTH` only turns enforcement on. Setting the
+key is enough on its own, and `REQUIRE_AUTH=1` without a key refuses to start — a
+presence-only check accepts any non-empty string, which is what an attacker sends. Auth
+covers `/v1/*` and `/admin/*`; `/health` stays open so container healthchecks work.
+
+`ALLOW_CPU` exists because no GPU is usually a *misconfiguration*, not a decision — a
+missing `--gpus all`, an absent NVIDIA Container Toolkit, a CUDA image that does not
+match the host driver, or a laptop dGPU switched off for power. Serving a 9B at ~2 tok/s
+reads as a broken gateway rather than a slow one, so the default is to refuse and name
+the likely fix.
+
+### Memory
+
+The gateway reads the cgroup limit, so `docker run --memory=8g` is understood and models
+that no longer fit are marked unavailable rather than loaded and OOM-killed. What it
+*cannot* see is the WSL2 ceiling: on Windows, Docker Desktop's VM gets roughly half of
+host RAM by default, and neither `os.totalmem()` inside the VM nor the cgroup reports the
+share you actually have. Set `MEMORY_BUDGET_GB` to that number.
+
+At ~8 GB the `vram` tier is comfortable and the `stretch` tier is not. To reach it, raise
+the VM cap in `%USERPROFILE%\.wslconfig` and restart with `wsl --shutdown`:
+
+```ini
+[wsl2]
+memory=12GB
+```
+
+On a 16 GB laptop that leaves Windows ~4 GB, which is tight — the stretch models are
+listed because they fit, not because they will feel good.
+
+## Container
+
+Weights are **not** baked into the image; `llama-server` downloads them into the volume
+on first use, so the image stays image-sized and survives upgrades.
+
+```bash
+# GPU (NVIDIA). Needs the NVIDIA Container Toolkit on Linux, or Docker Desktop with
+# WSL2 GPU support on Windows.
+docker build -t claude-local-llm .
+docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
+
+# CPU. Same Dockerfile, different base image. Expect single-digit tokens/sec.
+docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server -t claude-local-llm:cpu .
+docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm:cpu
+```
+
+Or with compose — `docker compose up -d` for GPU, `docker compose --profile cpu up -d`
+for CPU.
+
+Then point Claude Code at it exactly as in the Quickstart. `/admin/client-env` reports
+the container's own `PORT`, so if you publish it on a different host port
+(`-p 9000:8787`), edit `ANTHROPIC_BASE_URL` to match.
 
 ## Development
 

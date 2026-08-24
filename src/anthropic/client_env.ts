@@ -68,7 +68,10 @@ export function buildClientEnv(
 
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: "http://localhost:" + cfg.port,
-    ANTHROPIC_AUTH_TOKEN: "local-gateway",
+    // The real secret when one is configured, so the emitted block actually works.
+    // Claude Code sends this as `Authorization: Bearer`; with auth off, any non-empty
+    // placeholder is fine and the gateway ignores it.
+    ANTHROPIC_AUTH_TOKEN: cfg.gatewayApiKey ?? "local-gateway",
     // Every model slot, same id. The repetition is load-bearing; see MODEL_SLOTS.
     ...Object.fromEntries(MODEL_SLOTS.map((k) => [k, model.id] as const)),
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.context),

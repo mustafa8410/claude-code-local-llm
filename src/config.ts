@@ -26,8 +26,17 @@ export interface Config {
   backgroundStrategy: BackgroundStrategy;
   /** Shared secret llama-server requires; generated per-process, never leaves it. */
   backendApiKey: string;
-  /** Require a non-empty client credential. Off by default for localhost use. */
+  /**
+   * Require a valid client credential. Off by default: the gateway is meant to be
+   * reached over loopback, where a token excludes nobody. Implied by GATEWAY_API_KEY.
+   */
   requireAuth: boolean;
+  /**
+   * The secret clients must present. Auth is a comparison against this or it is
+   * nothing - a presence-only check accepts any non-empty string, which is exactly
+   * what an attacker sends.
+   */
+  gatewayApiKey: string | null;
   /**
    * Override the detected RAM budget, in GB. Detection is least reliable exactly
    * where it matters: WSL2 hands its VM a share of host RAM that neither
@@ -81,6 +90,19 @@ function envEnum<T extends string>(name: string, allowed: readonly T[], fallback
 
 export function loadConfig(): Config {
   const root = process.env.GATEWAY_ROOT ?? process.cwd();
+
+  const gatewayApiKey = process.env.GATEWAY_API_KEY?.trim() || null;
+  const requireAuthFlag = envBool("REQUIRE_AUTH", false);
+  // Refuse the combination that looks secure and is not. REQUIRE_AUTH on its own used
+  // to accept any non-empty token, so the setting a user reached for when exposing the
+  // port past localhost bought them nothing at all.
+  if (requireAuthFlag && gatewayApiKey === null) {
+    throw new Error(
+      "REQUIRE_AUTH=1 needs GATEWAY_API_KEY set to the secret clients must send. " +
+        "Without something to compare against, any non-empty token is accepted.",
+    );
+  }
+
   return {
     port: envInt("PORT", 8787),
     host: process.env.HOST ?? "0.0.0.0",
@@ -97,7 +119,9 @@ export function loadConfig(): Config {
       "reuse-primary",
     ),
     backendApiKey: randomBytes(24).toString("hex"),
-    requireAuth: envBool("REQUIRE_AUTH", false),
+    // Setting a key is itself a statement of intent, so it enables enforcement.
+    requireAuth: requireAuthFlag || gatewayApiKey !== null,
+    gatewayApiKey,
     memoryBudgetGb: envFloat("MEMORY_BUDGET_GB", null),
     allowCpu: envBool("ALLOW_CPU", false),
     toolProfile: process.env.TOOL_PROFILE ?? null,

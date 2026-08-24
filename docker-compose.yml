@@ -32,6 +32,14 @@ services:
       # the launch command.
       TOOL_PROFILE: "${TOOL_PROFILE:-full}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+      # Tell the gateway its real RAM budget when detection cannot. It reads the cgroup
+      # limit, so `mem_limit` below is honoured automatically - but under Docker Desktop
+      # on Windows the ceiling that actually binds is the WSL2 VM's share of host RAM,
+      # which neither the cgroup nor os.totalmem() reports. Set this to that number.
+      # MEMORY_BUDGET_GB: "8"
+    # Uncomment to cap the container. The gateway reads the limit and marks models that
+    # no longer fit as unavailable, instead of loading one and being OOM-killed.
+    # mem_limit: 8g
     deploy:
       resources:
         reservations:
@@ -41,12 +49,16 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
-  # Same image, no GPU reservation. Usable, but expect single-digit tokens/sec.
+  # Same Dockerfile, CPU base image, no GPU reservation. Usable, but expect
+  # single-digit tokens/sec - which is why the gateway refuses to start without a GPU
+  # unless ALLOW_CPU is set explicitly.
   gateway-cpu:
     profiles: ["cpu"]
     build:
       context: .
-      dockerfile: Dockerfile.cpu
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ghcr.io/ggml-org/llama.cpp:server
     image: claude-local-llm:cpu
     ports:
       - "8787:8787"
@@ -54,6 +66,7 @@ services:
       - llm-models:/models
       - ./config/models.yaml:/app/config/models.yaml:ro
     environment:
+      ALLOW_CPU: "1"
       BACKGROUND_STRATEGY: reuse-primary
       IDLE_TTL_SECONDS: "900"
       LOG_LEVEL: "${LOG_LEVEL:-info}"

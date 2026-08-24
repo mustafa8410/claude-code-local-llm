@@ -28,6 +28,7 @@ import { pruneTools } from "../tools/prune.ts";
 import { log } from "../log.ts";
 import type { MessagesRequest } from "../types.ts";
 import type { RequestContext } from "../context.ts";
+import type { ResolvedModel } from "../registry.ts";
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 
@@ -111,7 +112,7 @@ export async function handleMessages(
 async function streamWithSwap(
   res: ServerResponse,
   ctx: RequestContext,
-  target: { id: string },
+  target: ResolvedModel,
   body: MessagesRequest,
 ): Promise<void> {
   openSseResponse(res);
@@ -124,9 +125,7 @@ async function streamWithSwap(
 
   const started = Date.now();
   try {
-    const entry = ctx.registry.get(target.id);
-    if (!entry) throw GatewayError.internal("model " + target.id + " vanished from registry");
-    await ctx.supervisor.ensure(entry, (msg) => {
+    await ctx.supervisor.ensure(target, (msg) => {
       if (!res.writableEnded) comment(res, "gateway: " + msg);
     });
   } catch (err) {
@@ -151,13 +150,10 @@ async function streamWithSwap(
 async function forward(
   res: ServerResponse,
   ctx: RequestContext,
-  target: { id: string },
+  target: ResolvedModel,
   body: MessagesRequest,
   headersAlreadySent: boolean,
 ): Promise<void> {
-  const entry = ctx.registry.get(target.id);
-  if (!entry) throw GatewayError.internal("model " + target.id + " missing from registry");
-
   let prepared: MessagesRequest = body;
   if (ctx.config.toolProfile) {
     const pruned = pruneTools(body.tools, ctx.config.toolProfile);
@@ -165,8 +161,8 @@ async function forward(
   }
 
   const upstreamBody = buildUpstreamRequest(prepared, {
-    backendAlias: entry.alias,
-    contextWindow: entry.context,
+    backendAlias: target.alias,
+    contextWindow: target.context,
   });
 
   // Propagate client cancellation upstream.

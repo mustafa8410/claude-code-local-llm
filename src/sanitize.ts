@@ -40,9 +40,6 @@ const FORWARDED_FIELDS = [
   "tool_choice",
 ] as const;
 
-/** Tool schema fields llama-server understands. */
-const TOOL_FIELDS = ["name", "description", "input_schema"] as const;
-
 function stripCacheControl<T extends Record<string, unknown>>(obj: T): T {
   if (!("cache_control" in obj)) return obj;
   const { cache_control: _drop, ...rest } = obj;
@@ -87,7 +84,11 @@ function sanitizeMessage(msg: Message, index: number): Message {
   return { role, content };
 }
 
-/** How many messages had their role rewritten, for /admin/metrics. */
+/**
+ * How many messages had their role rewritten. Used by the contract tests to assert the
+ * mid-conversation `system` message is actually being caught, rather than the test
+ * passing because a fixture stopped containing one.
+ */
 export function countRewrittenRoles(messages: Message[] | undefined): number {
   if (!messages) return 0;
   let n = 0;
@@ -192,7 +193,9 @@ export function buildUpstreamRequest(
           (opts.contextWindow - MIN_OUTPUT_TOKENS) + " maximum",
       );
     }
-    out.max_tokens = Math.max(MIN_OUTPUT_TOKENS, Math.min(requested, available));
+    // No floor needed: `available < MIN_OUTPUT_TOKENS` already threw above, so
+    // `available` is at least MIN_OUTPUT_TOKENS and the min() cannot go below it.
+    out.max_tokens = Math.min(requested, available);
   } else {
     out.max_tokens = requested;
   }
@@ -200,10 +203,3 @@ export function buildUpstreamRequest(
   return out;
 }
 
-/** Fields we drop, exposed for /admin/metrics so the behaviour is observable. */
-export function droppedFields(req: MessagesRequest): string[] {
-  const known = new Set<string>([...FORWARDED_FIELDS, "model", "max_tokens", "tools"]);
-  return Object.keys(req).filter((k) => !known.has(k));
-}
-
-export const _internal = { TOOL_FIELDS, FORWARDED_FIELDS };

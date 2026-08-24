@@ -216,7 +216,9 @@ export class Supervisor {
       "--alias", model.alias,
       "--host", "127.0.0.1",
       "--port", String(this.cfg.backendPort),
-      "--api-key", this.cfg.backendApiKey,
+      // The backend credential goes in the environment, not here - see start(). On
+      // argv it is readable by any local process via `ps`, and it would also land in
+      // the "spawn" log line below, which we print at info level.
       // Tool calling is the entire point. Without --jinja llama-server cannot emit
       // tool_use blocks and Claude Code's agent loop never starts.
       "--jinja",
@@ -234,7 +236,14 @@ export class Supervisor {
     log.info("spawn", { bin: this.cfg.serverBin, args: args.join(" ") });
 
     const child = spawn(this.cfg.serverBin, args, {
-      env: { ...process.env, LLAMA_CACHE: this.cfg.modelCacheDir },
+      env: {
+        ...process.env,
+        LLAMA_CACHE: this.cfg.modelCacheDir,
+        // llama-server reads --api-key from LLAMA_API_KEY, which keeps the shared
+        // secret out of argv (visible to any local process through `ps`) and out of
+        // the spawn log line above.
+        LLAMA_API_KEY: this.cfg.backendApiKey,
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
