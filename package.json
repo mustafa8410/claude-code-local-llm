@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Run any local GGUF model behind Claude Code. Anthropic-compatible gateway with VRAM-aware model hot-swapping.",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --experimental-strip-types --watch src/server.ts",
@@ -15,7 +17,7 @@
     "yaml": "^2.6.1"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/node": "^22.20.1",
     "typescript": "^5.7.2"
   },
   "license": "MIT"
