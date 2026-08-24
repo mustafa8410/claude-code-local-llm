@@ -17,6 +17,7 @@ import { buildUpstreamRequest } from "../sanitize.ts";
 import { log } from "../log.ts";
 import type { CountTokensRequest, MessagesRequest } from "../types.ts";
 import type { RequestContext } from "../context.ts";
+import type { ResolvedModel } from "../registry.ts";
 
 export async function handleCountTokens(
   req: IncomingMessage,
@@ -24,10 +25,11 @@ export async function handleCountTokens(
   ctx: RequestContext,
 ): Promise<void> {
   const body = await readJsonBody<CountTokensRequest>(req);
-  const { model } = ctx.registry.resolve(body.model);
+  const { model, fellBack } = ctx.registry.resolve(body.model);
+  const target = countTarget(ctx, model, fellBack);
 
-  if (ctx.supervisor.isReadyFor(model.id)) {
-    const forwarded = await forwardCount(body, model.alias, ctx);
+  if (ctx.supervisor.isReadyFor(target.id)) {
+    const forwarded = await forwardCount(body, target.alias, ctx);
     if (forwarded !== null) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ input_tokens: forwarded }));
@@ -37,6 +39,31 @@ export async function handleCountTokens(
 
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ input_tokens: estimateTokens(body) }));
+}
+
+/**
+ * Resolve the model that would actually answer, using the same policy as inference.
+ *
+ * Counting used to check readiness against whatever the id RESOLVED to, while
+ * /v1/messages routes the same id through RequestContext.chooseTarget. Those disagree
+ * in exactly the case BACKGROUND_STRATEGY=reuse-primary exists for: an unrecognised id
+ * arriving while a non-default model is loaded resolves to the default, which is not
+ * the model that is serving, so the readiness check always missed and every count fell
+ * back to the estimate even though a usable backend was right there.
+ *
+ * A policy rejection (BACKGROUND_STRATEGY=reject) is not worth failing a token count
+ * over - the estimate is a fine answer - so that degrades rather than throwing.
+ */
+function countTarget(
+  ctx: RequestContext,
+  model: ResolvedModel,
+  fellBack: boolean,
+): ResolvedModel {
+  try {
+    return ctx.chooseTarget(model, fellBack);
+  } catch {
+    return model;
+  }
 }
 
 async function forwardCount(
