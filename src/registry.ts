@@ -24,7 +24,7 @@ import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { GatewayError } from "./anthropic/errors.ts";
 import { checkFit } from "./resources.ts";
-import type { HostResources, ModelEntry } from "./types.ts";
+import type { EffortLevel, HostResources, ModelEntry } from "./types.ts";
 
 const CLAUDE_ID_RE = /claude|anthropic/i;
 const LEADING_CLAUDE_RE = /^claude-/i;
@@ -69,6 +69,44 @@ export function defaultReasoningBudget(entry: ModelEntry): number {
  */
 export function reasoningRange(entry: ModelEntry): { min: number; max: number } {
   return { min: REASONING_UNRESTRICTED, max: Math.floor((entry.context ?? 0) / 2) };
+}
+
+/**
+ * Translate Claude Code's effort level into a thinking budget for this model.
+ *
+ * Claude Code sends `output_config.effort` on every request, set by the user through
+ * CLAUDE_CODE_EFFORT_LEVEL. It is already five discrete levels, so it maps onto a
+ * budget ladder directly - there is nothing to quantise, and no jitter to debounce.
+ *
+ * The ladder doubles at each step and is anchored so that `high`, which is both the API
+ * default and what Claude Code sends when the user has expressed no preference, lands
+ * exactly on the budget the model would have had anyway. Changing nothing therefore
+ * changes nothing. `max` reaches the enforced ceiling of half the window; past that the
+ * prompt and the answer have nowhere to live.
+ *
+ * `thinking` cannot serve this purpose even though Claude Code also sends it: it arrives
+ * as {"type":"adaptive"} and carries no number at all.
+ */
+export function budgetForEffort(entry: ModelEntry, effort: EffortLevel): number {
+  if (!entry.capabilities?.includes("thinking")) return 0;
+
+  const { max: ceiling } = reasoningRange(entry);
+  const context = entry.context ?? 0;
+  const clamp = (n: number): number => Math.max(0, Math.min(ceiling, Math.floor(n)));
+
+  switch (effort) {
+    case "low":
+      return clamp(context / 32);
+    case "medium":
+      return clamp(context / 16);
+    case "high":
+      // The no-preference case: keep the model's own default rather than recomputing it.
+      return clamp(defaultReasoningBudget(entry));
+    case "xhigh":
+      return clamp(context / 4);
+    case "max":
+      return ceiling;
+  }
 }
 
 export class Registry {

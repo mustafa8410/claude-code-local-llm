@@ -10,7 +10,8 @@ import { GatewayError } from "./anthropic/errors.ts";
 import type { Config } from "./config.ts";
 import type { Registry, ResolvedModel } from "./registry.ts";
 import type { Supervisor } from "./supervisor.ts";
-import type { MessagesRequest } from "./types.ts";
+import { readEffort, type MessagesRequest } from "./types.ts";
+import { budgetForEffort } from "./registry.ts";
 
 /**
  * Prove the capture directory is usable, at startup, before anything relies on it.
@@ -102,6 +103,44 @@ export class RequestContext {
       default:
         return requested;
     }
+  }
+
+  /**
+   * Let the client's chosen effort level pick this model's thinking budget.
+   *
+   * Claude Code sends `output_config.effort` on every request and the user sets it with
+   * CLAUDE_CODE_EFFORT_LEVEL, so this is the one reasoning dial that reaches us with the
+   * user's actual intent on it. `thinking` does not qualify - it arrives as
+   * {"type":"adaptive"} with no number, and llama-server ignores it regardless.
+   *
+   * The budget only takes effect at spawn time, so a change means evicting the running
+   * backend. That is why this is opt-in: paying a reload when someone deliberately turns
+   * a dial is reasonable, paying one because the client jittered a level between two
+   * requests is not. Returns whether the backend was evicted so the caller can recompute
+   * whether it now needs to wait for a load.
+   */
+  applyClientEffort(target: ResolvedModel, body: MessagesRequest): Promise<boolean> {
+    if (!this.config.effortFollowsClient) return Promise.resolve(false);
+
+    const effort = readEffort(body);
+    if (effort === null) return Promise.resolve(false);
+
+    const wanted = budgetForEffort(target, effort);
+    if (wanted === target.reasoningBudget) return Promise.resolve(false);
+
+    const previous = target.reasoningBudget;
+    target.reasoningBudget = wanted;
+    log.info("client effort changed the thinking budget", {
+      model: target.id,
+      effort,
+      from: previous,
+      to: wanted,
+    });
+
+    // Only a loaded backend has to go; if nothing is serving this model the next load
+    // picks the new value up for free.
+    if (this.supervisor.currentModelId() !== target.id) return Promise.resolve(false);
+    return this.supervisor.stop().then(() => true);
   }
 
   /**

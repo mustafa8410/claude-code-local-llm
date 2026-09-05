@@ -11,8 +11,9 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Registry, defaultReasoningBudget, reasoningRange } from "../src/registry.ts";
+import { Registry, defaultReasoningBudget, reasoningRange, budgetForEffort } from "../src/registry.ts";
 import { pruneTools } from "../src/tools/prune.ts";
+import { readEffort } from "../src/types.ts";
 import type { HostResources, ToolDef } from "../src/types.ts";
 
 const HOST: HostResources = {
@@ -237,6 +238,51 @@ test("a budget above 0 is refused for a model with no thinking mode", async () =
   const reg = await Registry.load(writeRegistry(VALID), HOST);
   assert.throws(() => reg.setReasoningBudget("local-claude-test", 512), /no thinking mode/);
   assert.equal(reg.setReasoningBudget("local-claude-test", 0).reasoningBudget, 0);
+});
+
+test("effort maps onto the budget ladder, anchored so `high` changes nothing", () => {
+  // Claude Code sends output_config.effort on every request and defaults it to "high",
+  // so "high" must land exactly where the model would have been anyway - otherwise
+  // merely enabling the feature would silently re-budget every model.
+  const m = { capabilities: ["tools", "thinking"], context: 16384 } as never;
+  assert.equal(budgetForEffort(m, "high"), defaultReasoningBudget(m));
+
+  assert.deepEqual(
+    (["low", "medium", "high", "xhigh", "max"] as const).map((e) => budgetForEffort(m, e)),
+    [512, 1024, 2048, 4096, 8192],
+    "a doubling ladder from ctx/32 up to the ctx/2 ceiling",
+  );
+});
+
+test("no effort level may exceed the enforced ceiling", () => {
+  for (const context of [4096, 8192, 16384, 32768, 131072]) {
+    const m = { capabilities: ["thinking"], context } as never;
+    const { max } = reasoningRange(m);
+    for (const e of ["low", "medium", "high", "xhigh", "max"] as const) {
+      assert.ok(
+        budgetForEffort(m, e) <= max,
+        `${e} at context ${context} exceeded the ${max} ceiling`,
+      );
+    }
+  }
+});
+
+test("effort is ignored for a model with no thinking mode", () => {
+  const m = { capabilities: ["tools"], context: 16384 } as never;
+  for (const e of ["low", "high", "max"] as const) {
+    assert.equal(budgetForEffort(m, e), 0, e);
+  }
+});
+
+test("effort is read from output_config, and anything unrecognised is ignored", () => {
+  // Tolerant inbound: Claude Code adds fields to output_config across releases, and a
+  // level we do not know about must not throw or be guessed at.
+  assert.equal(readEffort({ output_config: { effort: "xhigh" } }), "xhigh");
+  assert.equal(readEffort({ output_config: { effort: "ludicrous" } }), null);
+  assert.equal(readEffort({ output_config: {} }), null);
+  assert.equal(readEffort({}), null);
+  assert.equal(readEffort({ output_config: null }), null);
+  assert.equal(readEffort({ output_config: "high" }), null);
 });
 
 test("an explicit catalog budget beats the derived one", async () => {

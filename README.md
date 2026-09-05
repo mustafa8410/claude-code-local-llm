@@ -116,6 +116,32 @@ curl -X POST 'localhost:8787/admin/reasoning?model=local-claude-qwen3.5-9b&budge
 The value reaches `llama-server` as a spawn argument, so changing it evicts the running
 backend and the next request reloads with the new budget.
 
+#### Letting Claude Code drive it
+
+`EFFORT_FOLLOWS_CLIENT=1` maps Claude Code's own reasoning dial onto that budget. Claude
+Code sends `output_config.effort` on **every** request, and the user sets it with
+`CLAUDE_CODE_EFFORT_LEVEL` — so the intent arrives already expressed as five discrete
+levels, with nothing to quantise:
+
+| `CLAUDE_CODE_EFFORT_LEVEL` | Budget on a 16K model |
+|---|---|
+| `low` | 512 |
+| `medium` | 1024 |
+| `high` *(what Claude Code sends by default)* | **2048** — the model's own default |
+| `xhigh` | 4096 |
+| `max` | 8192 — the ceiling, half the window |
+
+The ladder is anchored so `high` lands exactly on the budget the model would have had
+anyway: turning the feature on changes nothing until the user actually turns their dial.
+
+It is **off by default** because the budget is a spawn argument, so a level change costs
+a backend reload. Paying that when someone deliberately changes effort is reasonable;
+paying it because the client varied a level between two requests is not. Enable it once
+you have seen your own traffic hold a level steady.
+
+`thinking` cannot serve this purpose, despite Claude Code also sending it — it arrives as
+`{"type":"adaptive"}` carrying no number, and llama-server ignores it either way.
+
 ### Tool schemas are the real context cost
 
 In a measured request, tool definitions were **81%** of the payload (~23,400 of
@@ -243,6 +269,7 @@ but Claude Code's agent loop will not work:
 | `TOOL_PROFILE` | unset | `full` \| `coding` \| `analysis` \| comma-separated list |
 | `GATEWAY_API_KEY` | unset | secret clients must send; setting it enables auth |
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
+| `EFFORT_FOLLOWS_CLIENT` | `0` | let Claude Code's `effort` pick the thinking budget |
 | `ALLOW_CPU` | `0` | start without a GPU, accepting single-digit tokens/sec |
 | `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
 | `CAPTURE_DIR` | unset | record request bodies for contract tests (see below) |

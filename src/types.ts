@@ -93,6 +93,31 @@ export interface CountTokensRequest {
   [k: string]: unknown;
 }
 
+/**
+ * Claude Code's reasoning-intensity dial, sent as `output_config.effort` on every
+ * request and set by the user through CLAUDE_CODE_EFFORT_LEVEL. Five discrete levels -
+ * which is why it maps onto a budget ladder without any quantising of our own.
+ */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+const EFFORT_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Pull the effort level out of an inbound body, or null if it is absent or unrecognised.
+ *
+ * Deliberately forgiving: `output_config` is typed `unknown` because Claude Code adds
+ * fields to it across releases, and a level we do not know about must be ignored rather
+ * than rejected - the gateway stays tolerant inbound.
+ */
+export function readEffort(req: { output_config?: unknown }): EffortLevel | null {
+  const cfg = req.output_config;
+  if (typeof cfg !== "object" || cfg === null) return null;
+  const raw = (cfg as { effort?: unknown }).effort;
+  return typeof raw === "string" && EFFORT_LEVELS.includes(raw)
+    ? (raw as EffortLevel)
+    : null;
+}
+
 export type ModelTier = "vram" | "offload" | "stretch";
 export type ModelCapability = "tools" | "thinking" | "vision";
 

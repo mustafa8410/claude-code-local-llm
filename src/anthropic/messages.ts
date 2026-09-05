@@ -88,6 +88,12 @@ export async function handleMessages(
   }
 
   const target = ctx.chooseTarget(model, fellBack);
+
+  // Before deciding whether this request has to wait for a load: a change of effort can
+  // itself evict the backend, and the streaming path needs an accurate answer so it
+  // commits SSE headers and keeps the connection fed through the reload.
+  await ctx.applyClientEffort(target, body);
+
   const wantsStream = body.stream === true;
   const needsSwap = !ctx.supervisor.isReadyFor(target.id);
 

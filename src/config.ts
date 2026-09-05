@@ -55,6 +55,13 @@ export interface Config {
    * `0` off, `N` a token budget. Per-model `reasoning_budget` still wins.
    */
   reasoningBudget: number | null;
+  /**
+   * Let Claude Code's `output_config.effort` pick the thinking budget from this model's
+   * allowed range. Off by default: the budget only reaches llama-server as a spawn
+   * argument, so honouring a change costs a backend reload - fine when the user
+   * deliberately turns a dial, bad if the client turns out to vary effort per request.
+   */
+  effortFollowsClient: boolean;
   toolProfile: string | null;
   captureDir: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -133,6 +140,7 @@ export function loadConfig(): Config {
       process.env.REASONING_BUDGET === undefined || process.env.REASONING_BUDGET === ""
         ? null
         : envInt("REASONING_BUDGET", 0),
+    effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", false),
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,
     logLevel: envEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),
