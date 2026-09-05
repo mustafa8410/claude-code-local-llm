@@ -358,22 +358,40 @@ async function main(): Promise<void> {
     ramSource: cfg.memoryBudgetGb === null ? "detected" : "MEMORY_BUDGET_GB",
   });
 
-  // Refuse rather than serve slowly. A 9B on CPU answers at roughly 2 tok/s, which a
-  // user reads as a broken gateway, not a slow one - and the overwhelmingly likely
-  // cause is a missing --gpus all rather than a deliberate choice to run on CPU.
-  // Failing here names the fix; starting anyway hides it behind a bad experience.
+  // Refuse rather than serve slowly, and the reason is harder than "slow".
+  //
+  // Measured in this container with no GPU: prompt processing runs at ~18 tok/s. A
+  // realistic Claude Code request - system prompt plus fifteen tool schemas, ~6,600
+  // tokens - therefore needs around 370 s just to PREFILL, before it emits a token.
+  // Claude Code abandons a stream that has been silent for 300 s. The 9B was measured
+  // being killed at 5 min 13 s without ever completing one request.
+  //
+  // So CPU is not a slower tier of the same product; past a certain prompt size it
+  // cannot finish a request at all, and the overwhelmingly likely cause of landing here
+  // is a missing --gpus all rather than a deliberate choice. Failing names the fix.
   if (resources.vramTotalMb === null && !cfg.allowCpu) {
     log.error("no GPU detected - refusing to start", {
       docker: "pass --gpus all (and install the NVIDIA Container Toolkit on Linux)",
       driver: "check nvidia-smi on the host; the CUDA image must match its driver",
       laptop: "a discrete GPU switched off for power saving reports no devices",
-      override: "set ALLOW_CPU=1 to run on CPU anyway, accepting single-digit tok/s",
+      override:
+        "set ALLOW_CPU=1 to run on CPU anyway - but read the warning it prints; " +
+        "Claude Code is unlikely to be usable",
     });
     process.exit(1);
   }
   if (resources.vramTotalMb === null) {
+    // Deliberately blunt. The old wording said "single-digit tokens/sec", which reads
+    // as an inconvenience and let a user pick the default 9B and hit a dead end with
+    // nothing explaining it.
     log.warn("no GPU detected and ALLOW_CPU=1 is set; continuing on CPU", {
-      expect: "single-digit tokens/sec; prefer the smallest model in the catalog",
+      prefill: "~18 tok/s measured, so a ~6,600-token Claude Code prompt needs ~370 s",
+      deadline:
+        "Claude Code aborts a stream silent for 300 s, so requests with a large tool " +
+        "set will be abandoned before the first token - the 9B never completed one",
+      advice:
+        "use the smallest model in the catalog, keep the tool set small, and expect " +
+        "this to be useful for trying the gateway out rather than for real sessions",
     });
   }
 

@@ -334,7 +334,7 @@ but Claude Code's agent loop will not work:
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
 | `EFFORT_FOLLOWS_CLIENT` | `1` | let Claude Code's `effort` pick the thinking budget |
 | `EFFORT_STREAK` | `3` | consecutive requests a level must hold before it is applied |
-| `ALLOW_CPU` | `0` | start without a GPU, accepting single-digit tokens/sec |
+| `ALLOW_CPU` | `0` | start without a GPU. For trying the gateway out only - see below |
 | `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
 | `CAPTURE_DIR` | unset | record request bodies for contract tests (see below) |
 
@@ -351,9 +351,32 @@ covers `/v1/*` and `/admin/*`; `/health` stays open so container healthchecks wo
 
 `ALLOW_CPU` exists because no GPU is usually a *misconfiguration*, not a decision — a
 missing `--gpus all`, an absent NVIDIA Container Toolkit, a CUDA image that does not
-match the host driver, or a laptop dGPU switched off for power. Serving a 9B at ~2 tok/s
-reads as a broken gateway rather than a slow one, so the default is to refuse and name
-the likely fix.
+match the host driver, or a laptop dGPU switched off for power. So the default is to
+refuse and name the likely fix.
+
+### CPU is not a slower tier — past a point it cannot finish a request
+
+Worth stating precisely, because "slow" undersells it. Measured in this container with
+the GPU withheld, on the same request: a Claude Code system prompt plus fifteen tool
+schemas, ~6,660 tokens.
+
+| | Cold | Warm (identical prefix cached) |
+|---|---|---|
+| GPU, 9B | 21.4 s | 2.5 s |
+| CPU, 2B | 111 s | 2.1 s |
+| **CPU, 9B** | **never completed — killed at 5 min 13 s** | — |
+
+The backend's own timing explains it: **prompt processing runs at ~18 tok/s on CPU**
+(`n_tokens = 4096, t = 230.57 s / 17.76 tokens per second`). A ~6,600-token prompt
+therefore needs roughly **370 s to prefill** — and Claude Code abandons a stream that has
+been silent for **300 s**. The model large enough to drive Claude Code cannot prefill a
+realistic request before the client gives up.
+
+Prefill, not decode, is the wall. Decode on the 2B looks fine in isolation (~15 tok/s),
+which is exactly why a quick test misleads — an agent loop re-prefills every turn.
+
+`ALLOW_CPU=1` is therefore for *trying the gateway out* — checking the endpoints, seeing
+a model load — not for real sessions.
 
 ### A small window cannot always compact its way out
 
@@ -425,20 +448,41 @@ listed because they fit, not because they will feel good.
 Weights are **not** baked into the image; `llama-server` downloads them into the volume
 on first use, so the image stays image-sized and survives upgrades.
 
+**There is one image.** It is CUDA-based and needs the NVIDIA Container Toolkit on Linux,
+or Docker Desktop with WSL2 GPU support on Windows.
+
 ```bash
-# GPU (NVIDIA). Needs the NVIDIA Container Toolkit on Linux, or Docker Desktop with
-# WSL2 GPU support on Windows.
 docker build -t claude-local-llm .
 docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
-
-# CPU. Same Dockerfile, different base image. Expect single-digit tokens/sec.
-docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4 \
-  -t claude-local-llm:cpu .
-docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm:cpu
 ```
 
-Or with compose — `docker compose up -d` for GPU, `docker compose --profile cpu up -d`
-for CPU.
+Or `docker compose up -d`.
+
+<details>
+<summary>Why there is no separate <code>:cpu</code> image to pull</summary>
+
+There was going to be one — it is 1.55 GB against 7.65 GB, since ~91% of the GPU image
+is CUDA runtime. Then the CPU path was actually measured, and it turned out to serve
+nobody: prefill runs at ~18 tok/s, a realistic Claude Code prompt needs ~370 s of it, and
+the client gives up at 300 s. A smaller download of something that cannot complete a
+request is not a kindness. See
+[CPU is not a slower tier](#cpu-is-not-a-slower-tier--past-a-point-it-cannot-finish-a-request).
+
+The CUDA image runs CPU-only perfectly well when you *do* want to poke at it — no GPU
+flag, `ALLOW_CPU=1`, verified working:
+
+```bash
+docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm
+```
+
+And the CPU **build** is still supported, because it is a cheap structural test of this
+Dockerfile that does not pull 7 GB — `docker compose --profile cpu up -d`, or:
+
+```bash
+docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4 \
+  -t claude-local-llm:cpu .
+```
+</details>
 
 **The base image is pinned by digest.** `src/resources.ts` discovers VRAM by parsing the
 exact text of `llama-server --list-devices`; a base rebase that reformats that output

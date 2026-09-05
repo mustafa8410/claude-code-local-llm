@@ -1,21 +1,26 @@
-# claude-local-llm - one Dockerfile, GPU or CPU.
+# claude-local-llm - one image, built from this one file.
 #
 # One container, one port, one process tree: the Node gateway supervises llama-server
 # as a child process. That is what makes the swap path work - stopping and starting a
 # backend is a local operation, not an orchestration problem.
 #
-#   GPU (default):
+# ONE image is published, the CUDA one:
 #     docker build -t claude-local-llm .
 #     docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
 #
-#   CPU (expect single-digit tokens/sec; the gateway also needs ALLOW_CPU=1):
+# It also runs CPU-only, without a GPU flag, when ALLOW_CPU=1 is set - so there is no
+# second image to pull. That is a measurement, not a preference: CPU prefill runs at
+# ~18 tok/s, a realistic Claude Code prompt needs ~370 s of it, and the client abandons
+# a stream at 300 s. A smaller image that cannot finish a request helps nobody.
+#
+#   CPU BUILD, kept because it is a cheap structural test of this file - it exercises
+#   every stage against a ~1.1 GB base instead of a ~7 GB one:
 #     docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4 \
 #       -t claude-local-llm:cpu .
-#     docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm:cpu
 #
-# The two variants differ ONLY in the base image, so they share this file. They used to
-# be two files whose 87 lines had to be kept identical by hand - which is a bug waiting
-# for the day someone edits one of them.
+# Both variants differ ONLY in the base image, so they share this file. They used to be
+# two files whose 87 lines had to be kept identical by hand - which is a bug waiting for
+# the day someone edits one of them.
 #
 # Weights are NOT baked in. llama-server downloads them into LLAMA_CACHE on first use,
 # so the image stays image-sized and the volume survives upgrades.
