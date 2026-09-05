@@ -98,8 +98,15 @@ COPY --from=build /app/package.json ./package.json
 COPY config ./config
 
 # Weights live on a volume so a container upgrade does not re-download several GB.
-RUN mkdir -p /models && useradd --system --uid 10001 --home /app gateway \
-    && chown -R gateway:gateway /app /models
+#
+# /captures is created and owned here too, so `-e CAPTURE_DIR=/captures` - the obvious
+# thing to type - actually works. The gateway runs as a non-root user, and it cannot
+# create a directory at the filesystem root, so without this the capture silently goes
+# nowhere. It is deliberately NOT declared as a VOLUME: capture is off by default, and a
+# VOLUME line would make every single `docker run` spawn an anonymous volume nobody
+# asked for. Mount one yourself (`-v caps:/captures`) when you want them to survive.
+RUN mkdir -p /models /captures && useradd --system --uid 10001 --home /app gateway \
+    && chown -R gateway:gateway /app /models /captures
 VOLUME ["/models"]
 
 ENV NODE_ENV=production \

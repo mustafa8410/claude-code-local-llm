@@ -3,7 +3,7 @@
  * decisions that do not belong to any single handler.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { log } from "./log.ts";
 import { GatewayError } from "./anthropic/errors.ts";
@@ -11,6 +11,35 @@ import type { Config } from "./config.ts";
 import type { Registry, ResolvedModel } from "./registry.ts";
 import type { Supervisor } from "./supervisor.ts";
 import type { MessagesRequest } from "./types.ts";
+
+/**
+ * Prove the capture directory is usable, at startup, before anything relies on it.
+ *
+ * Capture writes are fire-and-forget - a failure is one log line arriving long after
+ * the operator has stopped watching, so an unusable directory reads as "capture just
+ * doesn't work". The obvious container invocation hits exactly that: the gateway runs
+ * as a non-root user and cannot create a directory at the filesystem root, so
+ * `CAPTURE_DIR=/captures` fails permission-denied on a path the image now pre-creates
+ * for precisely this reason.
+ *
+ * Writing and deleting a probe file catches the permission case that mkdir alone
+ * misses: a directory that already exists but belongs to somebody else.
+ */
+export async function ensureCaptureDir(dir: string): Promise<void> {
+  const probe = path.join(dir, ".capture-probe");
+  try {
+    await mkdir(dir, { recursive: true });
+    await writeFile(probe, "ok", "utf8");
+    await unlink(probe);
+  } catch (err) {
+    throw new Error(
+      "CAPTURE_DIR " + dir + " is not writable: " + (err as Error).message +
+        ". In the container use /captures (pre-created for the gateway user) or a " +
+        "path under /models; a directory the image does not own cannot be created " +
+        "by a non-root process.",
+    );
+  }
+}
 
 export class RequestContext {
   private captureSeq = 0;
@@ -87,6 +116,8 @@ export class RequestContext {
     const file = path.join(dir, "req-" + String(seq).padStart(4, "0") + ".json");
     void mkdir(dir, { recursive: true })
       .then(() => writeFile(file, JSON.stringify(body, null, 2), "utf8"))
-      .catch((err: Error) => log.warn("capture failed", { err: err.message }));
+      // error, not warn: a silent capture is a debugging session that produces nothing
+      // and gives no clue why. ensureCaptureDir should have caught this at startup.
+      .catch((err: Error) => log.error("capture failed", { dir, err: err.message }));
   }
 }

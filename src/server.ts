@@ -13,7 +13,7 @@ import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
 import { Registry, reasoningRange } from "./registry.ts";
 import { Supervisor } from "./supervisor.ts";
-import { RequestContext } from "./context.ts";
+import { RequestContext, ensureCaptureDir } from "./context.ts";
 import { GatewayError, toEnvelope } from "./anthropic/errors.ts";
 import { handleMessages } from "./anthropic/messages.ts";
 import { handleCountTokens } from "./anthropic/count_tokens.ts";
@@ -326,6 +326,14 @@ async function main(): Promise<void> {
     log.error("no model in the catalog can run on this host", {
       hint: "raise the memory budget, add a smaller model, or check GPU passthrough",
       health: "/health will report 503 until at least one model fits",
+    });
+  }
+
+  if (cfg.captureDir) {
+    await ensureCaptureDir(cfg.captureDir);
+    log.info("capturing request bodies", {
+      dir: cfg.captureDir,
+      warning: "captures include the system prompt and a client device id; scrub before sharing",
     });
   }
 

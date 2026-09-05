@@ -245,7 +245,7 @@ but Claude Code's agent loop will not work:
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
 | `ALLOW_CPU` | `0` | start without a GPU, accepting single-digit tokens/sec |
 | `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
-| `CAPTURE_DIR` | unset | record request bodies for contract tests |
+| `CAPTURE_DIR` | unset | record request bodies for contract tests (see below) |
 
 `BACKGROUND_STRATEGY` exists because Claude Code drives two model slots — a main model
 and a background one for side tasks. The background slot defaults to a real Anthropic
@@ -263,6 +263,30 @@ missing `--gpus all`, an absent NVIDIA Container Toolkit, a CUDA image that does
 match the host driver, or a laptop dGPU switched off for power. Serving a 9B at ~2 tok/s
 reads as a broken gateway rather than a slow one, so the default is to refuse and name
 the likely fix.
+
+### Capturing what Claude Code actually sends
+
+`CAPTURE_DIR` writes every inbound `/v1/messages` body to disk as `req-0001.json`,
+`req-0002.json`, and so on. It is the tap that produced every fixture in `test/fixtures/`
+and found every client behaviour documented above — the request body grows with each
+Claude Code release, and reading it beats reading the spec.
+
+The write happens *before* the model is loaded, so you can harvest real traffic without
+spending a single GPU token.
+
+```bash
+docker run --gpus all -p 8787:8787 -v llm-models:/models \
+  -v captures:/captures -e CAPTURE_DIR=/captures claude-local-llm
+```
+
+`/captures` exists in the image and is owned by the gateway user. Any other path at the
+filesystem root is **not** writable — the gateway runs unprivileged — so the startup
+check refuses to run rather than let the capture silently go nowhere. Drop the `-v` if
+you only want the captures for the life of the container.
+
+> **Captures are not safe to commit as-is.** A body carries the full system prompt, your
+> file paths, and `metadata.user_id` — which contains a client device-id hash. Scrub
+> those before turning a capture into a fixture or attaching one to an issue.
 
 ### Memory
 
