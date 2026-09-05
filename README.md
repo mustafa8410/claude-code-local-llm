@@ -79,11 +79,22 @@ is delivered as an in-stream `event: error` rather than a 503.
 
 ### Fields that are hard 400s upstream
 
-`thinking: {"type":"adaptive"}` (sent for *any* id Claude Code doesn't recognise —
-which is every gateway alias), `context_management`, `output_config`, and the tool
-schema fields `strict` / `defer_loading`. The gateway is **tolerant inbound, strict
-outbound**: it never rejects an unknown field from Claude Code, and builds the upstream
-body from an explicit allowlist.
+`context_management`, `output_config`, and the tool schema fields `strict` /
+`defer_loading`. The gateway is **tolerant inbound, strict outbound**: it never rejects
+an unknown field from Claude Code, and builds the upstream body from an explicit
+allowlist.
+
+`thinking` is dropped for a different reason, and the reason changed. It was recorded
+here as a hard 400 for `{"type":"adaptive"}`; on the current llama.cpp that no longer
+reproduces. Probed directly against the backend, all of `adaptive`, `disabled` and
+`enabled`+`budget_tokens` return **200 — and all of them come back with a thinking block
+of much the same size, `disabled` included**. So the field is parsed and then ignored.
+
+That is worth stating plainly because it closes an appealing design: Claude Code already
+expresses a thinking preference (through `MAX_THINKING_TOKENS`, or "think" / "think
+harder" in a prompt) and it would be natural to pass it through. It would do nothing.
+Reasoning is therefore governed where it actually takes effect — `--reasoning` and
+`--reasoning-budget` at spawn — which is what `/admin/reasoning` drives.
 
 ### A reasoning model will think its whole answer away
 

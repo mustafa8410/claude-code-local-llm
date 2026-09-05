@@ -9,13 +9,21 @@
  * from an explicit allowlist, because several fields Claude Code sends are hard 400s
  * at llama-server:
  *
- *   thinking: {"type":"adaptive"}  - sent for any model id Claude Code does not know,
- *                                    which includes every gateway alias we invent
  *   context_management            - context-editing beta
  *   output_config                 - effort / structured outputs / task budget
  *   tools[].strict                - beta tool schema field
  *   tools[].defer_loading         - MCP tool-search beta field
  *   *.cache_control               - prompt-cache markers, meaningless to llama.cpp
+ *
+ * `thinking` is dropped for a different reason. It was recorded here as a hard 400,
+ * and on the current llama.cpp that no longer reproduces - probed directly against the
+ * backend, `adaptive`, `disabled` and `enabled`+`budget_tokens` all return 200. They
+ * also all return a thinking block of much the same size, including `disabled`, so the
+ * field is PARSED AND THEN IGNORED. Forwarding it would advertise a control that does
+ * nothing: a user setting MAX_THINKING_TOKENS would see it accepted and disobeyed.
+ * Thinking is governed where it actually takes effect - `--reasoning` /
+ * `--reasoning-budget` at spawn - so it is set per model and changed through
+ * POST /admin/reasoning. See registry.ts:defaultReasoningBudget.
  */
 
 import { GatewayError } from "./anthropic/errors.ts";

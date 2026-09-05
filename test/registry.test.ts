@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Registry } from "../src/registry.ts";
+import { Registry, defaultReasoningBudget, reasoningRange } from "../src/registry.ts";
 import { pruneTools } from "../src/tools/prune.ts";
 import type { HostResources, ToolDef } from "../src/types.ts";
 
@@ -186,4 +186,63 @@ test("when nothing fits, a default still resolves so endpoints can explain why",
   const reg = await Registry.load(writeRegistry(VALID.replace("size_gb: 1", "size_gb: 400")), HOST);
   assert.equal(reg.getDefaultId(), "local-claude-test");
   assert.ok(reg.list().every((m) => !m.available));
+});
+
+// ---------------------------------------------------------------- reasoning ----
+//
+// A thinking model spends its chain of thought from the same window as the prompt and
+// the reply. Unbounded on a local model that is not "higher quality", it is a request
+// that comes back with the whole output budget spent thinking and no answer - measured
+// in a container: 64 output tokens, all thinking, zero text.
+
+const THINKS = { capabilities: ["tools", "thinking"], context: 16384 } as const;
+
+test("a thinking model gets a budget that leaves room to answer", () => {
+  const budget = defaultReasoningBudget({ ...THINKS } as never);
+  assert.equal(budget, 2048, "an eighth of the window");
+  assert.ok(budget < 16384 / 2, "must stay under the enforced ceiling");
+});
+
+test("a large window does not reserve an unbounded amount of thinking", () => {
+  assert.equal(
+    defaultReasoningBudget({ capabilities: ["thinking"], context: 131072 } as never),
+    4096,
+    "capped rather than scaling forever",
+  );
+});
+
+test("a model with no thinking mode gets no budget", () => {
+  assert.equal(
+    defaultReasoningBudget({ capabilities: ["tools"], context: 32768 } as never),
+    0,
+  );
+});
+
+test("the allowed ceiling is half the window", () => {
+  assert.deepEqual(reasoningRange({ context: 16384 } as never), { min: -1, max: 8192 });
+});
+
+test("a budget outside the allowed range is refused, naming the range", async () => {
+  const reg = await Registry.load(writeRegistry(VALID), HOST);
+  // VALID has context 8192, so the ceiling is 4096.
+  assert.throws(
+    () => reg.setReasoningBudget("local-claude-test", 99_999),
+    /between -1 and 4096/,
+  );
+  assert.throws(() => reg.setReasoningBudget("local-claude-test", -2), /between/);
+});
+
+test("a budget above 0 is refused for a model with no thinking mode", async () => {
+  // Silently accepting it would report a setting that the chat template ignores.
+  const reg = await Registry.load(writeRegistry(VALID), HOST);
+  assert.throws(() => reg.setReasoningBudget("local-claude-test", 512), /no thinking mode/);
+  assert.equal(reg.setReasoningBudget("local-claude-test", 0).reasoningBudget, 0);
+});
+
+test("an explicit catalog budget beats the derived one", async () => {
+  const reg = await Registry.load(
+    writeRegistry(VALID.replace("capabilities: [tools]", "capabilities: [tools, thinking]\n    reasoning_budget: 777")),
+    HOST,
+  );
+  assert.equal(reg.get("local-claude-test")!.reasoningBudget, 777);
 });

@@ -75,7 +75,7 @@ export interface MessagesRequest {
   stop_sequences?: string[];
   tools?: ToolDef[];
   tool_choice?: unknown;
-  /** Claude Code sends {"type":"adaptive"} for models it does not recognise. */
+  /** Sent as {"type":"adaptive"} for unrecognised ids. Parsed but ignored upstream. */
   thinking?: unknown;
   /** Context-editing beta. Hard 400 upstream if forwarded blind. */
   context_management?: unknown;
