@@ -285,10 +285,34 @@ async function forward(
 }
 
 /** Keep an upstream error verbatim when it is already Anthropic-shaped. */
-function normaliseError(text: string): string {
+export function normaliseError(text: string): string {
   try {
-    const parsed = JSON.parse(text) as { type?: string; error?: unknown };
+    const parsed = JSON.parse(text) as {
+      type?: string;
+      error?: { type?: string; message?: string; n_prompt_tokens?: number; n_ctx?: number };
+    };
     if (parsed && parsed.type === "error" && parsed.error) return text;
+
+    // llama-server rejects an over-long prompt with its own shape:
+    //   {"error":{"type":"exceed_context_size_error","n_prompt_tokens":N,"n_ctx":M,...}}
+    //
+    // Wrapped as a generic api_error that reads as a server fault, and Claude Code's
+    // recovery keys off the WORDING of an over-long prompt - so a request that could be
+    // fixed by compacting instead looked like the gateway had broken. sanitize.ts
+    // normally catches this first, but its estimator is a fast approximation and dense
+    // content (base64, minified assets) tokenises worse than it assumes; this is the
+    // exact backstop for the cases it lets through.
+    const upstream = parsed?.error;
+    if (upstream?.type === "exceed_context_size_error") {
+      const detail =
+        typeof upstream.n_prompt_tokens === "number" && typeof upstream.n_ctx === "number"
+          ? upstream.n_prompt_tokens + " tokens > " + upstream.n_ctx + " maximum"
+          : (upstream.message ?? "context window exceeded");
+      return JSON.stringify(
+        toEnvelope(GatewayError.invalidRequest("prompt is too long: " + detail)).body,
+      );
+    }
+
     return JSON.stringify(toEnvelope(GatewayError.internal(text.slice(0, 500))).body);
   } catch {
     return JSON.stringify(toEnvelope(GatewayError.internal(text.slice(0, 500))).body);

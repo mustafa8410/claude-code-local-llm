@@ -135,9 +135,18 @@ The ladder is anchored so `high` lands exactly on the budget the model would hav
 anyway: turning the feature on changes nothing until the user actually turns their dial.
 
 It is **off by default** because the budget is a spawn argument, so a level change costs
-a backend reload. Paying that when someone deliberately changes effort is reasonable;
-paying it because the client varied a level between two requests is not. Enable it once
-you have seen your own traffic hold a level steady.
+a backend reload.
+
+That reload cost is not theoretical. A soak run with this enabled produced **36 effort
+changes and 35 backend reloads inside a single phase** — requests alternated between two
+levels and every alternation forced a respawn. The phase burned 537 seconds and finished
+no work. A rerun with identical settings did not reproduce the alternation, so which slot
+emits the odd level is still unknown.
+
+So a level is only acted on once it has held for `EFFORT_STREAK` requests in a row
+(default 3). An alternating pattern can never build a run, whatever produces it; a real
+change applies within three requests. The guard is deliberately blind to the source,
+because the source was never identified.
 
 `thinking` cannot serve this purpose, despite Claude Code also sending it — it arrives as
 `{"type":"adaptive"}` carrying no number, and llama-server ignores it either way.
@@ -270,6 +279,7 @@ but Claude Code's agent loop will not work:
 | `GATEWAY_API_KEY` | unset | secret clients must send; setting it enables auth |
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
 | `EFFORT_FOLLOWS_CLIENT` | `0` | let Claude Code's `effort` pick the thinking budget |
+| `EFFORT_STREAK` | `3` | consecutive requests a level must hold before it is applied |
 | `ALLOW_CPU` | `0` | start without a GPU, accepting single-digit tokens/sec |
 | `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
 | `CAPTURE_DIR` | unset | record request bodies for contract tests (see below) |
@@ -290,6 +300,28 @@ missing `--gpus all`, an absent NVIDIA Container Toolkit, a CUDA image that does
 match the host driver, or a laptop dGPU switched off for power. Serving a 9B at ~2 tok/s
 reads as a broken gateway rather than a slow one, so the default is to refuse and name
 the likely fix.
+
+### A small window cannot always compact its way out
+
+Auto-compaction fires when the conversation approaches `CLAUDE_CODE_MAX_CONTEXT_TOKENS`,
+and on a 16K local model it fires often. But the compaction request contains the whole
+conversation, so once the conversation genuinely overflows, **the compaction request
+overflows too** and there is no automatic way back:
+
+```
+request (20833 tokens) exceeds the available context size (16384 tokens)
+Prompt is too long · automatic compaction failed
+```
+
+That is a property of a small window, not a gateway bug. The gateway's job is to make it
+legible: `sanitize.ts` rejects an over-long prompt up front with the `prompt is too long`
+wording Claude Code's recovery keys on, and when its fast byte-based estimate lets one
+through — dense content such as base64 or minified assets tokenises worse than the
+estimate assumes — the upstream `exceed_context_size_error` is translated into the same
+wording rather than surfacing as a generic server fault.
+
+Practically: prefer a model with a larger window for long sessions, and start a fresh
+session rather than fighting one that has already overflowed.
 
 ### Capturing what Claude Code actually sends
 

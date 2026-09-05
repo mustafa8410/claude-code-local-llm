@@ -62,6 +62,17 @@ export interface Config {
    * deliberately turns a dial, bad if the client turns out to vary effort per request.
    */
   effortFollowsClient: boolean;
+  /**
+   * How many consecutive requests must carry a level before it is acted on.
+   *
+   * A soak test produced 36 effort changes and 35 backend reloads in a single phase:
+   * requests alternated between two levels, and every alternation forced a respawn.
+   * Which slot emitted the odd level was never pinned down - a second run with the same
+   * settings did not reproduce it - so the guard deliberately does not depend on
+   * identifying the culprit. Requiring a run of the same level starves any alternating
+   * pattern of the chance to trigger anything, whatever its source.
+   */
+  effortStreak: number;
   toolProfile: string | null;
   captureDir: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -141,6 +152,7 @@ export function loadConfig(): Config {
         ? null
         : envInt("REASONING_BUDGET", 0),
     effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", false),
+    effortStreak: Math.max(1, envInt("EFFORT_STREAK", 3)),
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,
     logLevel: envEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),

@@ -10,7 +10,7 @@ import { GatewayError } from "./anthropic/errors.ts";
 import type { Config } from "./config.ts";
 import type { Registry, ResolvedModel } from "./registry.ts";
 import type { Supervisor } from "./supervisor.ts";
-import { readEffort, type MessagesRequest } from "./types.ts";
+import { readEffort, type EffortLevel, type MessagesRequest } from "./types.ts";
 import { budgetForEffort } from "./registry.ts";
 
 /**
@@ -44,6 +44,8 @@ export async function ensureCaptureDir(dir: string): Promise<void> {
 
 export class RequestContext {
   private captureSeq = 0;
+  /** Consecutive requests seen at one effort level. See applyClientEffort. */
+  private effortRun: { level: EffortLevel; count: number } | null = null;
 
   // Explicit fields rather than parameter properties: Node's strip-only TypeScript
   // mode cannot transform the latter, and dev runs the sources directly.
@@ -124,6 +126,29 @@ export class RequestContext {
 
     const effort = readEffort(body);
     if (effort === null) return Promise.resolve(false);
+
+    // Act only on a level that has held for several requests in a row.
+    //
+    // Measured without this: 36 effort changes and 35 backend reloads inside one phase,
+    // because requests alternated between two levels and each alternation forced a
+    // respawn. The phase took 537 seconds and produced nothing. Which slot emitted the
+    // odd level was never established - a rerun with identical settings did not
+    // reproduce it - so this guard is deliberately blind to the source. An alternating
+    // pattern can never build a run, while a real change (every following request
+    // carries the new level) clears the bar in a handful of requests.
+    if (this.effortRun !== null && this.effortRun.level === effort) {
+      this.effortRun.count += 1;
+    } else {
+      this.effortRun = { level: effort, count: 1 };
+    }
+    if (this.effortRun.count < this.config.effortStreak) {
+      log.debug("effort level not yet stable; ignoring", {
+        effort,
+        seen: this.effortRun.count,
+        needs: this.config.effortStreak,
+      });
+      return Promise.resolve(false);
+    }
 
     const wanted = budgetForEffort(target, effort);
     if (wanted === target.reasoningBudget) return Promise.resolve(false);
