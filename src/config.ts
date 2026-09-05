@@ -57,9 +57,14 @@ export interface Config {
   reasoningBudget: number | null;
   /**
    * Let Claude Code's `output_config.effort` pick the thinking budget from this model's
-   * allowed range. Off by default: the budget only reaches llama-server as a spawn
-   * argument, so honouring a change costs a backend reload - fine when the user
-   * deliberately turns a dial, bad if the client turns out to vary effort per request.
+   * allowed range.
+   *
+   * On by default, which is only defensible because the ladder is anchored: Claude Code
+   * sends `high` when the user has set no preference, and `high` maps to the budget the
+   * model already had. Measured over a twelve-request session with the dial untouched -
+   * zero budget changes, one backend spawn. Someone who never turns the dial pays
+   * nothing; the feature costs a reload only when they deliberately change it, and
+   * effortStreak keeps an alternating client from doing so accidentally.
    */
   effortFollowsClient: boolean;
   /**
@@ -151,7 +156,7 @@ export function loadConfig(): Config {
       process.env.REASONING_BUDGET === undefined || process.env.REASONING_BUDGET === ""
         ? null
         : envInt("REASONING_BUDGET", 0),
-    effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", false),
+    effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", true),
     effortStreak: Math.max(1, envInt("EFFORT_STREAK", 3)),
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,

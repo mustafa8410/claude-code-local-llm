@@ -15,7 +15,7 @@ import path from "node:path";
 import { Registry } from "../src/registry.ts";
 import { RequestContext } from "../src/context.ts";
 import { normaliseError } from "../src/anthropic/messages.ts";
-import type { Config } from "../src/config.ts";
+import { loadConfig, type Config } from "../src/config.ts";
 import type { HostResources, MessagesRequest } from "../src/types.ts";
 
 const HOST: HostResources = {
@@ -108,6 +108,37 @@ test("the run must be consecutive, not merely frequent", async () => {
     await ctx.applyClientEffort(model, body(e));
   }
   assert.equal(sup.stops(), 0);
+});
+
+test("the untouched dial costs nothing - the property the default rests on", async () => {
+  // Claude Code sends effort=high whenever the user has expressed no preference, and
+  // the ladder anchors `high` on the model's own default. That equality is the entire
+  // justification for shipping this enabled: someone who never sets
+  // CLAUDE_CODE_EFFORT_LEVEL must pay no reloads at all. Measured over a real
+  // twelve-request session: 12x high, 0 budget changes, 1 spawn. If this assertion ever
+  // fails, the default has to go back to off.
+  const reg = await registry();
+  const sup = fakeSupervisor("local-claude-thinker");
+  const ctx = new RequestContext(cfg(), reg, sup as never);
+  const model = reg.get("local-claude-thinker")!;
+  const before = model.reasoningBudget;
+
+  for (let i = 0; i < 12; i++) await ctx.applyClientEffort(model, body("high"));
+
+  assert.equal(model.reasoningBudget, before, "high must equal the model's own default");
+  assert.equal(sup.stops(), 0, "an untouched dial must never evict the backend");
+});
+
+test("the feature defaults to enabled", () => {
+  // Guards the flip itself: loadConfig with a clean environment must opt in.
+  const saved = process.env.EFFORT_FOLLOWS_CLIENT;
+  delete process.env.EFFORT_FOLLOWS_CLIENT;
+  try {
+    assert.equal(loadConfig().effortFollowsClient, true);
+  } finally {
+    if (saved === undefined) delete process.env.EFFORT_FOLLOWS_CLIENT;
+    else process.env.EFFORT_FOLLOWS_CLIENT = saved;
+  }
 });
 
 test("nothing happens at all when the feature is off", async () => {

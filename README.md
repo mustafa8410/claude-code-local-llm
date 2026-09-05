@@ -101,8 +101,8 @@ Reasoning is therefore governed where it actually takes effect — `--reasoning`
 Qwen3.5 reasons by default under `--jinja`, and the chain of thought comes out of the
 *same* window as the prompt and the reply. Asking the 2B for a one-line answer with
 `max_tokens: 64` returned **64 thinking tokens and no text at all** — `stop_reason:
-max_tokens`, nothing to show the user. Claude Code cannot suppress this either: it sends
-`thinking`, which is a hard 400 upstream, so the gateway drops it.
+max_tokens`, nothing to show the user. Claude Code cannot suppress it either: the
+`thinking` field it sends is ignored upstream, as above.
 
 So the budget is set where it can be enforced — `--reasoning-budget` on the backend. Each
 model gets a derived default (an eighth of its window, capped at 4096; zero for models
@@ -118,7 +118,7 @@ backend and the next request reloads with the new budget.
 
 #### Letting Claude Code drive it
 
-`EFFORT_FOLLOWS_CLIENT=1` maps Claude Code's own reasoning dial onto that budget. Claude
+Claude Code's own reasoning dial drives that budget. Claude
 Code sends `output_config.effort` on **every** request, and the user sets it with
 `CLAUDE_CODE_EFFORT_LEVEL` — so the intent arrives already expressed as five discrete
 levels, with nothing to quantise:
@@ -134,8 +134,14 @@ levels, with nothing to quantise:
 The ladder is anchored so `high` lands exactly on the budget the model would have had
 anyway: turning the feature on changes nothing until the user actually turns their dial.
 
-It is **off by default** because the budget is a spawn argument, so a level change costs
-a backend reload.
+It is **on by default**, and the anchoring is why that is safe: Claude Code sends `high`
+whenever the user has expressed no preference, and `high` is the budget the model already
+had. Measured over a twelve-request session with the dial untouched — twelve requests at
+`high`, **zero budget changes, one backend spawn**. You pay nothing until you turn the
+dial. Set `EFFORT_FOLLOWS_CLIENT=0` to ignore the client's level entirely.
+
+The reason to care about that measurement is the reload: the budget is a spawn argument,
+so a level change costs a backend restart.
 
 That reload cost is not theoretical. A soak run with this enabled produced **36 effort
 changes and 35 backend reloads inside a single phase** — requests alternated between two
@@ -278,7 +284,7 @@ but Claude Code's agent loop will not work:
 | `TOOL_PROFILE` | unset | `full` \| `coding` \| `analysis` \| comma-separated list |
 | `GATEWAY_API_KEY` | unset | secret clients must send; setting it enables auth |
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
-| `EFFORT_FOLLOWS_CLIENT` | `0` | let Claude Code's `effort` pick the thinking budget |
+| `EFFORT_FOLLOWS_CLIENT` | `1` | let Claude Code's `effort` pick the thinking budget |
 | `EFFORT_STREAK` | `3` | consecutive requests a level must hold before it is applied |
 | `ALLOW_CPU` | `0` | start without a GPU, accepting single-digit tokens/sec |
 | `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
