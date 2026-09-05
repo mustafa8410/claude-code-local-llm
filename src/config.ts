@@ -50,6 +50,11 @@ export interface Config {
    * choice. Refusing loudly at startup points at that; serving slowly hides it.
    */
   allowCpu: boolean;
+  /**
+   * Default thinking budget for models the catalog does not pin. `-1` unrestricted,
+   * `0` off, `N` a token budget. Per-model `reasoning_budget` still wins.
+   */
+  reasoningBudget: number | null;
   toolProfile: string | null;
   captureDir: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -124,6 +129,10 @@ export function loadConfig(): Config {
     gatewayApiKey,
     memoryBudgetGb: envFloat("MEMORY_BUDGET_GB", null),
     allowCpu: envBool("ALLOW_CPU", false),
+    reasoningBudget:
+      process.env.REASONING_BUDGET === undefined || process.env.REASONING_BUDGET === ""
+        ? null
+        : envInt("REASONING_BUDGET", 0),
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,
     logLevel: envEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),

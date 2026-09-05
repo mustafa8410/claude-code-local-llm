@@ -224,6 +224,26 @@ export class Supervisor {
       "--jinja",
       "-c", String(model.context),
     );
+
+    // llama-server downloads the repo's mmproj (multimodal projector) automatically
+    // whenever the repo has one, regardless of whether we intend to use vision. On a
+    // text-only model that is a pure waste - close to 1 GB on some of these repos - paid
+    // on every cold cache, and during container testing it is what tipped a download
+    // into a HuggingFace 429. Ask for it only when the catalog says the model does
+    // vision at all.
+    if (!model.capabilities.includes("vision")) args.push("--no-mmproj");
+
+    // Thinking budget. A reasoning model emits its chain of thought into the same
+    // context the prompt and the answer share, so left unrestricted on a 16K window it
+    // will happily spend the whole reply budget reasoning and never answer - measured
+    // in a container: 64 output tokens, all of them thinking, zero text.
+    if (model.reasoningBudget === 0) {
+      args.push("--reasoning", "off");
+    } else if (model.reasoningBudget > 0) {
+      args.push("--reasoning-budget", String(model.reasoningBudget));
+    }
+    // reasoningBudget === -1 means unrestricted, which is llama-server's own default.
+
     if (model.args) args.push(...model.args);
     return args;
   }

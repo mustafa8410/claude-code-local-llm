@@ -20,6 +20,24 @@
 # Weights are NOT baked in. llama-server downloads them into LLAMA_CACHE on first use,
 # so the image stays image-sized and the volume survives upgrades.
 
+# Which llama.cpp image the runtime stage is built on:
+#
+#   :server-cuda    CUDA 12 drivers (default)
+#   :server-cuda13  CUDA 13 drivers
+#   :server         CPU only
+#
+# Declared HERE, before any FROM, because that is the only scope a FROM can read an ARG
+# from. Declaring it next to the runtime FROM instead puts it inside the build stage,
+# and the base name silently resolves to empty:
+#   ERROR: base name (${BASE_IMAGE}) should not be blank
+#
+# PIN THIS BEFORE PUBLISHING. The tag floats, and src/resources.ts parses the exact text
+# of `llama-server --list-devices` to discover VRAM. A base rebase that reformats that
+# output makes every model look unavailable, with nothing in our logs pointing at the
+# cause. Pin by digest once a build is verified:
+#   ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest>
+ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
+
 # ---------------------------------------------------------------- build stage ----
 FROM node:22-bookworm-slim AS build
 
@@ -38,12 +56,9 @@ RUN npm run build && npm prune --omit=dev
 #   :server-cuda13  CUDA 13 drivers
 #   :server         CPU only
 #
-# PIN THIS BEFORE PUBLISHING. The tag floats, and src/resources.ts parses the exact
-# text of `llama-server --list-devices` to discover VRAM. A base-image rebase that
-# reformats that output makes every model look unavailable, with nothing in our logs
-# pointing at the cause. Pin by digest once a build is verified:
-#   BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest>
-ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
+# The BASE_IMAGE default is declared at the top of this file, before the first FROM.
+# It has to be: an ARG declared inside a stage belongs to that stage, so a FROM cannot
+# see it and the base name resolves to empty.
 FROM ${BASE_IMAGE} AS runtime
 
 ARG NODE_VERSION=22.20.0

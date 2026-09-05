@@ -36,6 +36,39 @@ export interface ResolvedModel extends ModelEntry {
   unavailableReason?: string;
   /** llama-server --alias value; kept identical to `id` so upstream logs line up. */
   alias: string;
+  /** Effective thinking budget. Mutable at runtime via setReasoningBudget. */
+  reasoningBudget: number;
+}
+
+/** Unrestricted thinking. Allowed, but it will eat a small context window alive. */
+export const REASONING_UNRESTRICTED = -1;
+
+/**
+ * A sensible thinking budget for a model nobody has configured.
+ *
+ * Reasoning models emit their chain of thought into the SAME context the prompt and the
+ * answer share, so on a local model an unrestricted budget is not a luxury setting - it
+ * is how a 64-token reply turns into 64 tokens of thinking and no answer, which is
+ * exactly what a container test produced before this existed.
+ *
+ * An eighth of the window leaves room to think without crowding out the conversation,
+ * and the 4096 cap stops a large-context model from reserving more than it can usefully
+ * spend. A model whose template has no thinking mode gets 0, because a budget there is
+ * meaningless.
+ */
+export function defaultReasoningBudget(entry: ModelEntry): number {
+  if (!entry.capabilities?.includes("thinking")) return 0;
+  return Math.min(4096, Math.floor((entry.context ?? 0) / 8));
+}
+
+/**
+ * The range an operator may choose from for this model.
+ *
+ * Half the window is the ceiling because past that the prompt and the answer have
+ * nowhere to live - the model would think itself out of room to respond.
+ */
+export function reasoningRange(entry: ModelEntry): { min: number; max: number } {
+  return { min: REASONING_UNRESTRICTED, max: Math.floor((entry.context ?? 0) / 2) };
 }
 
 export class Registry {
@@ -80,7 +113,11 @@ export class Registry {
     return [...this.byId.values()].find((m) => m.default)?.id ?? null;
   }
 
-  static async load(path: string, res: HostResources): Promise<Registry> {
+  static async load(
+    path: string,
+    res: HostResources,
+    envDefaultBudget?: number | null,
+  ): Promise<Registry> {
     let raw: string;
     try {
       raw = await readFile(path, "utf8");
@@ -149,11 +186,31 @@ export class Registry {
         problems.push(`${where}: \`capabilities\` must be a list`);
       }
 
+      // Catalog value wins, then the operator's global default, then the derived one.
+      let budget = e.reasoning_budget ?? envDefaultBudget ?? defaultReasoningBudget(e);
+      if (!Number.isInteger(budget) || budget < REASONING_UNRESTRICTED) {
+        problems.push(
+          `${where}: \`reasoning_budget\` must be an integer >= -1 ` +
+            `(-1 unrestricted, 0 off), got ${JSON.stringify(budget)}`,
+        );
+        budget = 0;
+      } else {
+        const { max } = reasoningRange(e);
+        if (budget > max) {
+          problems.push(
+            `${where}: \`reasoning_budget\` ${budget} exceeds half this model's ` +
+              `${e.context}-token window (${max}); the prompt and the answer would ` +
+              `have nowhere left to go`,
+          );
+        }
+      }
+
       const fit = checkFit(e.size_gb ?? 0, e.tier ?? "vram", res);
       resolved.push({
         ...e,
         alias: e.id,
         available: fit.fits,
+        reasoningBudget: budget,
         ...(fit.fits ? {} : { unavailableReason: fit.note }),
       });
     }
@@ -197,6 +254,37 @@ export class Registry {
       throw GatewayError.internal("model registry is empty");
     }
     return { model: fallback, fellBack: true };
+  }
+
+  /**
+   * Change a model's thinking budget at runtime.
+   *
+   * The value only reaches llama-server through spawn arguments, so it takes effect on
+   * the next load rather than immediately - the caller is responsible for deciding
+   * whether to evict the running backend. Returning the range on rejection means the
+   * caller can tell the operator what they were allowed to ask for.
+   */
+  setReasoningBudget(id: string, budget: number): ResolvedModel {
+    const model = this.get(id);
+    if (!model) {
+      throw GatewayError.notFound("no model with id " + id);
+    }
+    const { min, max } = reasoningRange(model);
+    if (!Number.isInteger(budget) || budget < min || budget > max) {
+      throw GatewayError.invalidRequest(
+        "reasoning budget must be an integer between " + min + " and " + max +
+          " for " + model.id + " (-1 unrestricted, 0 off; the ceiling is half its " +
+          model.context + "-token window)",
+      );
+    }
+    if (budget !== 0 && !model.capabilities.includes("thinking")) {
+      throw GatewayError.invalidRequest(
+        model.id + " has no thinking mode in its chat template, so a budget above 0 " +
+          "would do nothing",
+      );
+    }
+    model.reasoningBudget = budget;
+    return model;
   }
 
   list(): ResolvedModel[] {

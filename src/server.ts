@@ -11,7 +11,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { loadConfig, type Config } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
-import { Registry } from "./registry.ts";
+import { Registry, reasoningRange } from "./registry.ts";
 import { Supervisor } from "./supervisor.ts";
 import { RequestContext } from "./context.ts";
 import { GatewayError, toEnvelope } from "./anthropic/errors.ts";
@@ -198,6 +198,52 @@ async function route(
     return;
   }
 
+  if (path === "/admin/reasoning" && method === "GET") {
+    sendJson(res, 200, {
+      note:
+        "A reasoning model spends thinking tokens from the same window as the prompt " +
+        "and the answer. -1 unrestricted, 0 off, N a token budget.",
+      models: ctx.registry.list().map((m) => ({
+        id: m.id,
+        reasoning_budget: m.reasoningBudget,
+        supports_thinking: m.capabilities.includes("thinking"),
+        allowed: reasoningRange(m),
+        context: m.context,
+      })),
+    });
+    return;
+  }
+
+  if (path === "/admin/reasoning" && method === "POST") {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const requested = params.get("model");
+    const raw = params.get("budget");
+    if (raw === null) {
+      throw GatewayError.invalidRequest(
+        "pass ?budget=N (-1 unrestricted, 0 off, N a token budget), and optionally &model=<id>",
+      );
+    }
+    const { model } = ctx.registry.resolve(requested ?? undefined);
+    const updated = ctx.registry.setReasoningBudget(model.id, Number(raw));
+
+    // The budget only reaches llama-server through spawn arguments, so a model that is
+    // already running keeps its old value until it restarts. Evict it rather than
+    // reload eagerly: the operator may be adjusting several, and the next request pays
+    // one cold load instead of every edit paying one.
+    let evicted = false;
+    if (ctx.supervisor.currentModelId() === updated.id) {
+      await ctx.supervisor.stop();
+      evicted = true;
+    }
+    sendJson(res, 200, {
+      model: updated.id,
+      reasoning_budget: updated.reasoningBudget,
+      allowed: reasoningRange(updated),
+      applied: evicted ? "backend evicted; next request reloads with the new budget" : "on next load",
+    });
+    return;
+  }
+
   if (path === "/admin/preload" && method === "POST") {
     const requested = new URL(req.url ?? "/", "http://localhost").searchParams.get("model");
     const { model } = ctx.registry.resolve(requested ?? undefined);
@@ -252,7 +298,7 @@ async function main(): Promise<void> {
     });
   }
 
-  const registry = await Registry.load(cfg.registryPath, resources);
+  const registry = await Registry.load(cfg.registryPath, resources, cfg.reasoningBudget);
   const unavailable = registry.list().filter((m) => !m.available);
   log.info("registry loaded", {
     models: registry.list().length,

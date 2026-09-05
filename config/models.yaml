@@ -32,6 +32,20 @@
 #             marked unavailable. The gateway checks at startup and tells you the
 #             shortfall in GB rather than failing at load time.
 #
+# reasoning_budget (optional):
+#   Tokens the model may spend thinking before it has to start answering.
+#   -1 unrestricted, 0 off, N a token budget.
+#
+#   A reasoning model writes its chain of thought into the SAME window the prompt and
+#   the reply share, so unrestricted is not a "better quality" setting on a local model
+#   - it is how a request comes back with its whole output budget spent on thinking and
+#   no answer at all. Measured in a container before this existed: 64 output tokens, 64
+#   of them thinking, zero text.
+#
+#   Omit it and the gateway derives one: an eighth of the context window capped at 4096
+#   for models with `thinking` in capabilities, and 0 for models without. Change it live
+#   with `POST /admin/reasoning?model=<id>&budget=N`; the ceiling is half the window.
+#
 # Sizes below are measured from the actual GGUF files, not estimated.
 
 models:

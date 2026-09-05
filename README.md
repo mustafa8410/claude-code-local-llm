@@ -85,6 +85,26 @@ schema fields `strict` / `defer_loading`. The gateway is **tolerant inbound, str
 outbound**: it never rejects an unknown field from Claude Code, and builds the upstream
 body from an explicit allowlist.
 
+### A reasoning model will think its whole answer away
+
+Qwen3.5 reasons by default under `--jinja`, and the chain of thought comes out of the
+*same* window as the prompt and the reply. Asking the 2B for a one-line answer with
+`max_tokens: 64` returned **64 thinking tokens and no text at all** — `stop_reason:
+max_tokens`, nothing to show the user. Claude Code cannot suppress this either: it sends
+`thinking`, which is a hard 400 upstream, so the gateway drops it.
+
+So the budget is set where it can be enforced — `--reasoning-budget` on the backend. Each
+model gets a derived default (an eighth of its window, capped at 4096; zero for models
+with no thinking mode), and it is adjustable within a range the gateway enforces, with
+half the window as the ceiling:
+
+```bash
+curl -X POST 'localhost:8787/admin/reasoning?model=local-claude-qwen3.5-9b&budget=1024'
+```
+
+The value reaches `llama-server` as a spawn argument, so changing it evicts the running
+backend and the next request reloads with the new budget.
+
 ### Tool schemas are the real context cost
 
 In a measured request, tool definitions were **81%** of the payload (~23,400 of
@@ -194,6 +214,8 @@ but Claude Code's agent loop will not work:
 | `GET /admin/models` | catalog with capability and availability flags |
 | `GET /admin/client-env` | the exact Claude Code config for a model (`?format=sh\|ps1`) |
 | `POST /admin/preload` | load a model without issuing a request |
+| `GET /admin/reasoning` | thinking budget per model, with the allowed range |
+| `POST /admin/reasoning` | change one, live: `?model=<id>&budget=N` |
 | `GET /admin/metrics` | spawn/swap counts, config |
 
 ## Configuration

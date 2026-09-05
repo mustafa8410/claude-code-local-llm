@@ -109,6 +109,12 @@ export interface ModelEntry {
   capabilities: ModelCapability[];
   tier: ModelTier;
   default?: boolean;
+  /**
+   * Tokens this model may spend thinking before it must start answering.
+   * `-1` unrestricted, `0` off, `N` a budget. Omit to take the derived default -
+   * see defaultReasoningBudget in registry.ts.
+   */
+  reasoning_budget?: number;
   /** Extra llama-server argv appended after the generated base flags. */
   args?: string[];
 }
