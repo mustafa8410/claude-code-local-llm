@@ -432,12 +432,32 @@ docker build -t claude-local-llm .
 docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
 
 # CPU. Same Dockerfile, different base image. Expect single-digit tokens/sec.
-docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server -t claude-local-llm:cpu .
+docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4 \
+  -t claude-local-llm:cpu .
 docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm:cpu
 ```
 
 Or with compose — `docker compose up -d` for GPU, `docker compose --profile cpu up -d`
 for CPU.
+
+**The base image is pinned by digest.** `src/resources.ts` discovers VRAM by parsing the
+exact text of `llama-server --list-devices`; a base rebase that reformats that output
+would make every model look unavailable, with nothing in the logs pointing at the cause.
+The pinned CUDA digest is the one this project was verified against (llama.cpp `b10795`).
+Moving to a newer base means repointing it *and* re-running the GPU check — that the
+build succeeds proves nothing about the parse.
+
+When building an image to publish, pass provenance so it can be traced back to a commit:
+
+```bash
+docker build -t <user>/claude-local-llm:<tag> \
+  --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+```
+
+Both default to empty rather than to an invented value, and the image sets its own
+OCI labels — without them it would inherit the base image's and advertise itself as
+NVIDIA's `llama.cpp`.
 
 Then point Claude Code at it exactly as in the Quickstart. `/admin/client-env` reports
 the container's own `PORT`, so if you publish it on a different host port
@@ -458,4 +478,10 @@ every bug above was found by reading captured traffic rather than the spec.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+**No model weights are shipped** in this repository or in the image. The catalog is a
+list of pointers, and `llama-server` downloads weights into your volume on first use, so
+each model's license binds you at download time. All five catalog models are Apache-2.0.
+Full breakdown, including the CUDA runtime's separate terms in the GPU image, in
+[MODEL_LICENSES.md](MODEL_LICENSES.md).

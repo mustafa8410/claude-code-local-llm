@@ -9,7 +9,7 @@
 #     docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
 #
 #   CPU (expect single-digit tokens/sec; the gateway also needs ALLOW_CPU=1):
-#     docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server \
+#     docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4 \
 #       -t claude-local-llm:cpu .
 #     docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm:cpu
 #
@@ -20,23 +20,30 @@
 # Weights are NOT baked in. llama-server downloads them into LLAMA_CACHE on first use,
 # so the image stays image-sized and the volume survives upgrades.
 
-# Which llama.cpp image the runtime stage is built on:
+# Which llama.cpp image the runtime stage is built on. Upstream publishes these tags:
 #
-#   :server-cuda    CUDA 12 drivers (default)
+#   :server-cuda    CUDA 12 drivers (what the default digest below points at)
 #   :server-cuda13  CUDA 13 drivers
 #   :server         CPU only
+#
+# Resolve a tag to a digest before building against it - `docker buildx imagetools
+# inspect ghcr.io/ggml-org/llama.cpp:<tag>` prints one - so the build stays reproducible.
 #
 # Declared HERE, before any FROM, because that is the only scope a FROM can read an ARG
 # from. Declaring it next to the runtime FROM instead puts it inside the build stage,
 # and the base name silently resolves to empty:
 #   ERROR: base name (${BASE_IMAGE}) should not be blank
 #
-# PIN THIS BEFORE PUBLISHING. The tag floats, and src/resources.ts parses the exact text
-# of `llama-server --list-devices` to discover VRAM. A base rebase that reformats that
-# output makes every model look unavailable, with nothing in our logs pointing at the
-# cause. Pin by digest once a build is verified:
-#   ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:<digest>
-ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda
+# PINNED BY DIGEST, deliberately. The tag floats, and src/resources.ts parses the exact
+# text of `llama-server --list-devices` to discover VRAM. A base rebase that reformats
+# that output makes every model look unavailable, with nothing in our logs pointing at
+# the cause - so a published image could break with no commit on our side.
+#
+# The digest below is the CUDA 12 base this project was actually verified against:
+# llama.cpp build b10795, tag :server-cuda as of 2026-09-04. To move to a newer base,
+# repoint it and re-run the GPU verification - `--list-devices` output is the thing to
+# re-check, not just that the build succeeds.
+ARG BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:7f87a3bbe3143cdb857f5c84f82d2c15528be70ca0e7c5ade9a47d56b791f93f
 
 # ---------------------------------------------------------------- build stage ----
 FROM node:22-bookworm-slim AS build
@@ -51,10 +58,6 @@ RUN npm run build && npm prune --omit=dev
 # -------------------------------------------------------------- runtime stage ----
 # The official llama.cpp image already carries llama-server and, for the CUDA variant,
 # the CUDA runtime - so we never compile llama.cpp ourselves.
-#
-#   :server-cuda    CUDA 12 drivers (default)
-#   :server-cuda13  CUDA 13 drivers
-#   :server         CPU only
 #
 # The BASE_IMAGE default is declared at the top of this file, before the first FROM.
 # It has to be: an ARG declared inside a stage belongs to that stage, so a FROM cannot
@@ -117,6 +120,41 @@ ENV NODE_ENV=production \
     MODELS_CONFIG=/app/config/models.yaml \
     LLAMA_CACHE=/models \
     LLAMA_SERVER_BIN=/usr/local/bin/llama-server
+
+# Provenance. Set these when publishing so the image can be traced back to a commit:
+#   docker build -t <repo>:<tag> \
+#     --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" \
+#     --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+# They default to empty rather than to something invented, because a wrong commit is
+# worse than no commit.
+ARG SOURCE_COMMIT=""
+ARG BUILD_DATE=""
+# Keep in step with package.json.
+ARG APP_VERSION="0.1.0"
+# Re-declared: BASE_IMAGE is a global ARG, and a global is visible to FROM lines but NOT
+# inside a stage until the stage asks for it again. Without this the base.name label
+# below expands to an empty string.
+ARG BASE_IMAGE
+
+# EVERY label below overrides one inherited from the base image, and that is the whole
+# point of the block. Unlabelled, this image advertises itself on a registry as
+# `llama.cpp`, `LLM inference in C/C++`, maintained by NVIDIA, with a source URL
+# pointing at ggml-org - because those are the base image's labels and labels are
+# inherited. That misleads anyone who pulls it and misattributes the work in both
+# directions. `base.name` is the honest way to say what it is built on.
+LABEL org.opencontainers.image.title="claude-local-llm" \
+      org.opencontainers.image.description="Anthropic-compatible gateway that runs local GGUF models behind Claude Code" \
+      org.opencontainers.image.source="https://github.com/mustafa8410/claude-local-llm" \
+      org.opencontainers.image.url="https://github.com/mustafa8410/claude-local-llm" \
+      org.opencontainers.image.documentation="https://github.com/mustafa8410/claude-local-llm#readme" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.authors="Mustafa Albayrak" \
+      org.opencontainers.image.base.name="${BASE_IMAGE}" \
+      org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.ref.name="" \
+      maintainer=""
 
 USER gateway
 EXPOSE 8787

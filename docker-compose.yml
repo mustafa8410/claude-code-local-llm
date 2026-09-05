@@ -58,7 +58,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        BASE_IMAGE: ghcr.io/ggml-org/llama.cpp:server
+        # Pinned by digest for the same reason as the GPU base - see Dockerfile.
+        BASE_IMAGE: ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4
     image: claude-local-llm:cpu
     ports:
       - "8787:8787"
