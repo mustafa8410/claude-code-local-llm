@@ -12,14 +12,16 @@ import { loadConfig, type Config } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
 import { Registry, reasoningRange } from "./registry.ts";
+import { loadCustomModels, saveCustomModels, verifyHuggingFaceRepo } from "./custom-models.ts";
 import { Supervisor } from "./supervisor.ts";
 import { RequestContext, ensureCaptureDir } from "./context.ts";
 import { GatewayError, toEnvelope } from "./anthropic/errors.ts";
-import { handleMessages } from "./anthropic/messages.ts";
+import { handleMessages, readJsonBody } from "./anthropic/messages.ts";
 import { handleCountTokens } from "./anthropic/count_tokens.ts";
 import { handleModels } from "./anthropic/models.ts";
 import { handleClientEnv } from "./anthropic/client_env.ts";
 import { availableProfiles } from "./tools/prune.ts";
+import type { ModelEntry } from "./types.ts";
 
 function pathOf(req: IncomingMessage): string {
   const raw = req.url ?? "/";
@@ -198,6 +200,83 @@ async function route(
     return;
   }
 
+  if (path === "/admin/models" && method === "POST") {
+    const entry = await readJsonBody<ModelEntry>(req);
+
+    // Check the repo exists before accepting it. Skippable with ?verify=0 for an
+    // air-gapped host, where the lookup can only ever fail.
+    const verify = new URL(req.url ?? "/", "http://localhost").searchParams.get("verify");
+    if (entry?.hf && verify !== "0") {
+      const check = await verifyHuggingFaceRepo(entry.hf);
+      if (!check.ok) throw GatewayError.invalidRequest(check.reason ?? "unknown repo");
+      if (check.reason) log.warn("model added without verification", { reason: check.reason });
+    }
+
+    const added = ctx.registry.add(entry, ctx.resources);
+    await saveCustomModels(ctx.registry, ctx.config);
+    log.info("model added at runtime", {
+      model: added.id,
+      available: added.available,
+      reason: added.unavailableReason ?? "fits",
+    });
+    sendJson(res, 201, {
+      id: added.id,
+      available: added.available,
+      unavailable_reason: added.unavailableReason ?? null,
+      reasoning_budget: added.reasoningBudget,
+      // Weights are fetched on first use, so adding costs nothing until then - but only
+      // an `hf` entry has anything to fetch. Telling someone who supplied a `path` to
+      // pull it would send them after a download that does not exist.
+      weights: added.hf
+        ? "not downloaded yet - POST /admin/models/pull?model=" + added.id
+        : "expected at " + added.path + " inside the container; mount it there",
+    });
+    return;
+  }
+
+  if (path === "/admin/models" && method === "DELETE") {
+    const id = new URL(req.url ?? "/", "http://localhost").searchParams.get("model");
+    if (!id) throw GatewayError.invalidRequest("pass ?model=<id>");
+    ctx.registry.remove(id);
+    await saveCustomModels(ctx.registry, ctx.config);
+    log.info("model removed", { model: id, note: "weights are left in the cache" });
+    sendJson(res, 200, { removed: id, weights: "left in the model cache" });
+    return;
+  }
+
+  if (path === "/admin/models/pull" && method === "POST") {
+    const requested = new URL(req.url ?? "/", "http://localhost").searchParams.get("model");
+    const { model } = ctx.registry.resolve(requested ?? undefined);
+
+    // Downloading several GB takes far longer than any sensible client timeout, so the
+    // response streams progress as it goes rather than going silent and hoping.
+    res.writeHead(200, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+    });
+    res.flushHeaders?.();
+    res.write("pulling " + model.id + "\n");
+
+    const started = Date.now();
+    try {
+      // A pull is a load that is immediately released: llama-server has no
+      // download-only mode, and loading is the only thing that proves the weights are
+      // actually usable rather than merely present.
+      await ctx.supervisor.ensure(model, (msg) => {
+        if (!res.writableEnded) res.write(msg + "\n");
+      });
+      const wasAlreadyLoaded = ctx.supervisor.currentModelId() === model.id;
+      if (wasAlreadyLoaded) await ctx.supervisor.stop();
+      res.write("ok: " + model.id + " ready in " + (Date.now() - started) + "ms\n");
+      res.write("released; the weights stay in the cache for the next request\n");
+    } catch (err) {
+      res.write("failed: " + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+    res.end();
+    return;
+  }
+
   if (path === "/admin/reasoning" && method === "GET") {
     sendJson(res, 200, {
       note:
@@ -337,8 +416,12 @@ async function main(): Promise<void> {
     });
   }
 
+  // Models the user added through the API in a previous run. Never fatal: this is user
+  // data that can go stale in ways the baked catalog cannot.
+  await loadCustomModels(registry, cfg, resources);
+
   const supervisor = new Supervisor(cfg);
-  const ctx = new RequestContext(cfg, registry, supervisor);
+  const ctx = new RequestContext(cfg, registry, supervisor, resources);
 
   const server = http.createServer((req, res) => {
     const started = Date.now();

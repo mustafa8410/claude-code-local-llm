@@ -212,6 +212,51 @@ rather than put in the picker.
 default Docker Desktop / WSL2 VM is given. The gateway probes real VRAM and RAM at
 startup and marks anything that cannot fit unavailable, **naming the shortfall in GB**.
 
+### Downloading a model the image never shipped
+
+That catalog was chosen for one 8 GB laptop, which is no basis for deciding what your
+hardware may run. `POST /admin/models` adds an entry at runtime — no rebuild, no
+bind-mounted YAML:
+
+```bash
+curl -X POST localhost:8787/admin/models -H 'content-type: application/json' -d '{
+  "id": "local-claude-qwen3-06b",
+  "display_name": "Qwen3 0.6B",
+  "hf": "unsloth/Qwen3-0.6B-GGUF:Q4_K_M",
+  "size_gb": 0.4,
+  "context": 32768,
+  "capabilities": ["tools", "thinking"],
+  "tier": "vram"
+}'
+
+# weights are fetched on first use; pull now to get it over with. Streams progress,
+# so a multi-GB download is not a silent wait.
+curl -N -X POST 'localhost:8787/admin/models/pull?model=local-claude-qwen3-06b'
+
+curl -X DELETE 'localhost:8787/admin/models?model=local-claude-qwen3-06b'
+```
+
+The entry is written to `custom-models.yaml` **in the model volume**, beside the weights
+it describes, so it survives `docker rm` exactly as long as the download does. Deleting
+an entry leaves the weights in the cache.
+
+Three things this deliberately checks:
+
+- **The repo exists.** A typo used to be accepted with a `201` and only surface at pull
+  time as llama.cpp's `exactly one out metadata, path_model, and file must be defined` —
+  which never mentions the repo name. Now it is a `400` naming it. Add `?verify=0` to
+  skip the lookup on an air-gapped host; an unreachable Hugging Face is treated as
+  "cannot say" and accepts the model either way.
+- **The id follows Claude Code's rules** — it must contain `claude` and must not start
+  with `claude-`. Both failures are silent at runtime rather than errors: one drops the
+  model from the `/model` picker, the other makes the client assume a 200K window.
+- **It fits.** A model too large for the host is still added, but reported unavailable
+  with the shortfall in GB — you may be about to raise `MEMORY_BUDGET_GB`.
+
+Entries in `config/models.yaml` stay under version control and cannot be deleted through
+the API; only models you added at runtime can. A runtime model also cannot claim
+`default` — the catalog owns that choice.
+
 ### Models that cannot drive Claude Code
 
 These run fine under `llama.cpp` and are useful for completion or chat, but their chat
@@ -264,6 +309,9 @@ but Claude Code's agent loop will not work:
 | `/api/hello` | connection-warming probe; answers any method |
 | `GET /health` | state, backend status, recent backend logs |
 | `GET /admin/models` | catalog with capability and availability flags |
+| `POST /admin/models` | add a model the image never shipped (see below) |
+| `DELETE /admin/models` | forget a model you added: `?model=<id>` |
+| `POST /admin/models/pull` | download the weights now: `?model=<id>`, streams progress |
 | `GET /admin/client-env` | the exact Claude Code config for a model (`?format=sh\|ps1`) |
 | `POST /admin/preload` | load a model without issuing a request |
 | `GET /admin/reasoning` | thinking budget per model, with the allowed range |
@@ -400,7 +448,7 @@ the container's own `PORT`, so if you publish it on a different host port
 ```bash
 npm install
 npm run typecheck
-npm test          # 17 tests, incl. contract tests over real captured traffic
+npm test          # 89 tests, incl. contract tests over real captured traffic
 ./run-gateway.sh
 ```
 

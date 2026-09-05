@@ -10,7 +10,7 @@ import { GatewayError } from "./anthropic/errors.ts";
 import type { Config } from "./config.ts";
 import type { Registry, ResolvedModel } from "./registry.ts";
 import type { Supervisor } from "./supervisor.ts";
-import { readEffort, type EffortLevel, type MessagesRequest } from "./types.ts";
+import { readEffort, type EffortLevel, type HostResources, type MessagesRequest } from "./types.ts";
 import { budgetForEffort } from "./registry.ts";
 
 /**
@@ -52,11 +52,19 @@ export class RequestContext {
   readonly config: Config;
   readonly registry: Registry;
   readonly supervisor: Supervisor;
+  /** Probed once at startup; a model added at runtime is sized against it. */
+  readonly resources: HostResources;
 
-  constructor(config: Config, registry: Registry, supervisor: Supervisor) {
+  constructor(
+    config: Config,
+    registry: Registry,
+    supervisor: Supervisor,
+    resources: HostResources,
+  ) {
     this.config = config;
     this.registry = registry;
     this.supervisor = supervisor;
+    this.resources = resources;
   }
 
   /**

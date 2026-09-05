@@ -73,7 +73,7 @@ test("an alternating effort level never triggers a reload", async () => {
   // The exact pattern measured in the soak: two levels, strictly alternating.
   const reg = await registry();
   const sup = fakeSupervisor("local-claude-thinker");
-  const ctx = new RequestContext(cfg(), reg, sup as never);
+  const ctx = new RequestContext(cfg(), reg, sup as never, HOST);
   const model = reg.get("local-claude-thinker")!;
   const before = model.reasoningBudget;
 
@@ -88,7 +88,7 @@ test("an alternating effort level never triggers a reload", async () => {
 test("a level that actually holds is applied, once", async () => {
   const reg = await registry();
   const sup = fakeSupervisor("local-claude-thinker");
-  const ctx = new RequestContext(cfg(), reg, sup as never);
+  const ctx = new RequestContext(cfg(), reg, sup as never, HOST);
   const model = reg.get("local-claude-thinker")!;
 
   for (let i = 0; i < 6; i++) await ctx.applyClientEffort(model, body("max"));
@@ -100,7 +100,7 @@ test("a level that actually holds is applied, once", async () => {
 test("the run must be consecutive, not merely frequent", async () => {
   const reg = await registry();
   const sup = fakeSupervisor("local-claude-thinker");
-  const ctx = new RequestContext(cfg(), reg, sup as never);
+  const ctx = new RequestContext(cfg(), reg, sup as never, HOST);
   const model = reg.get("local-claude-thinker")!;
 
   // "max" appears more often than "low", but never three times in a row.
@@ -119,7 +119,7 @@ test("the untouched dial costs nothing - the property the default rests on", asy
   // fails, the default has to go back to off.
   const reg = await registry();
   const sup = fakeSupervisor("local-claude-thinker");
-  const ctx = new RequestContext(cfg(), reg, sup as never);
+  const ctx = new RequestContext(cfg(), reg, sup as never, HOST);
   const model = reg.get("local-claude-thinker")!;
   const before = model.reasoningBudget;
 
@@ -144,7 +144,7 @@ test("the feature defaults to enabled", () => {
 test("nothing happens at all when the feature is off", async () => {
   const reg = await registry();
   const sup = fakeSupervisor("local-claude-thinker");
-  const ctx = new RequestContext(cfg({ effortFollowsClient: false }), reg, sup as never);
+  const ctx = new RequestContext(cfg({ effortFollowsClient: false }), reg, sup as never, HOST);
   const model = reg.get("local-claude-thinker")!;
   const before = model.reasoningBudget;
 
@@ -190,7 +190,7 @@ test("an already Anthropic-shaped upstream error is passed through untouched", (
 test("a model that is not loaded changes budget without an eviction", async () => {
   const reg = await registry();
   const sup = fakeSupervisor(null); // nothing serving
-  const ctx = new RequestContext(cfg(), reg, sup as never);
+  const ctx = new RequestContext(cfg(), reg, sup as never, HOST);
   const model = reg.get("local-claude-thinker")!;
 
   for (let i = 0; i < 4; i++) await ctx.applyClientEffort(model, body("low"));

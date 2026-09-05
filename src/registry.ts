@@ -38,6 +38,8 @@ export interface ResolvedModel extends ModelEntry {
   alias: string;
   /** Effective thinking budget. Mutable at runtime via setReasoningBudget. */
   reasoningBudget: number;
+  /** Added through the API rather than the catalog file, so it can be removed again. */
+  custom?: boolean;
 }
 
 /** Unrestricted thinking. Allowed, but it will eat a small context window alive. */
@@ -109,6 +111,85 @@ export function budgetForEffort(entry: ModelEntry, effort: EffortLevel): number 
   }
 }
 
+/**
+ * Validate one catalog entry, returning every problem rather than the first.
+ *
+ * Shared by the startup load and by runtime additions, deliberately: a model a user adds
+ * through the API must clear exactly the same bar as one baked into the image. The id
+ * rules in particular are not stylistic - both of them fail silently at runtime, which is
+ * precisely why they are enforced up front.
+ */
+export function validateEntry(e: ModelEntry, where: string, seen: Set<string>): string[] {
+  const problems: string[] = [];
+
+  if (!e?.id || typeof e.id !== "string") return [`${where}: missing \`id\``];
+
+  if (!CLAUDE_ID_RE.test(e.id)) {
+    problems.push(
+      `${where}: id must contain "claude" or "anthropic" - Claude Code silently ` +
+        `drops every other id from the /model picker. Try "local-claude-${e.id}".`,
+    );
+  }
+  if (LEADING_CLAUDE_RE.test(e.id)) {
+    problems.push(
+      `${where}: id must not START with "claude-". Such an id makes ` +
+        `CLAUDE_CODE_MAX_CONTEXT_TOKENS inert unless DISABLE_COMPACT is also set, ` +
+        `so Claude Code assumes a 200K context window and never compacts in time ` +
+        `for a local model. Try "local-${e.id}".`,
+    );
+  }
+  if (BRACKET_1M_RE.test(e.id)) {
+    problems.push(
+      `${where}: id must not contain "[1m]" - Claude Code then assumes a 1M ` +
+        `context window and ignores CLAUDE_CODE_MAX_CONTEXT_TOKENS.`,
+    );
+  }
+  if (seen.has(e.id.toLowerCase())) problems.push(`${where}: duplicate id`);
+
+  if (!e.hf && !e.path) problems.push(`${where}: needs either \`hf\` or \`path\``);
+  if (e.hf && e.path) problems.push(`${where}: set \`hf\` or \`path\`, not both`);
+  if (typeof e.size_gb !== "number" || e.size_gb <= 0) {
+    problems.push(`${where}: \`size_gb\` must be a positive number`);
+  }
+  if (typeof e.context !== "number" || e.context <= 0) {
+    problems.push(`${where}: \`context\` must be a positive number`);
+  }
+  if (!VALID_TIERS.has(e.tier)) {
+    problems.push(`${where}: \`tier\` must be one of vram|offload|stretch`);
+  }
+  if (!Array.isArray(e.capabilities)) {
+    problems.push(`${where}: \`capabilities\` must be a list`);
+  }
+  return problems;
+}
+
+/** Resolve an entry's effective thinking budget, reporting any problem with it. */
+function resolveBudget(
+  e: ModelEntry,
+  where: string,
+  envDefault: number | null | undefined,
+  problems: string[],
+): number {
+  // Catalog value wins, then the operator's global default, then the derived one.
+  const budget = e.reasoning_budget ?? envDefault ?? defaultReasoningBudget(e);
+  if (!Number.isInteger(budget) || budget < REASONING_UNRESTRICTED) {
+    problems.push(
+      `${where}: \`reasoning_budget\` must be an integer >= -1 ` +
+        `(-1 unrestricted, 0 off), got ${JSON.stringify(budget)}`,
+    );
+    return 0;
+  }
+  const { max } = reasoningRange(e);
+  if (budget > max) {
+    problems.push(
+      `${where}: \`reasoning_budget\` ${budget} exceeds half this model's ` +
+        `${e.context}-token window (${max}); the prompt and the answer would ` +
+        `have nowhere left to go`,
+    );
+  }
+  return budget;
+}
+
 export class Registry {
   private readonly byId = new Map<string, ResolvedModel>();
   private defaultId: string | null = null;
@@ -175,74 +256,12 @@ export class Registry {
 
     for (const [i, e] of entries.entries()) {
       const where = `models[${i}]${e?.id ? ` (${e.id})` : ""}`;
-
-      if (!e?.id || typeof e.id !== "string") {
-        problems.push(`${where}: missing \`id\``);
-        continue;
-      }
-      if (!CLAUDE_ID_RE.test(e.id)) {
-        problems.push(
-          `${where}: id must contain "claude" or "anthropic" - Claude Code silently ` +
-            `drops every other id from the /model picker. Try "local-claude-${e.id}".`,
-        );
-      }
-      if (LEADING_CLAUDE_RE.test(e.id)) {
-        problems.push(
-          `${where}: id must not START with "claude-". Such an id makes ` +
-            `CLAUDE_CODE_MAX_CONTEXT_TOKENS inert unless DISABLE_COMPACT is also set, ` +
-            `so Claude Code assumes a 200K context window and never compacts in time ` +
-            `for a local model. Try "local-${e.id}".`,
-        );
-      }
-      if (BRACKET_1M_RE.test(e.id)) {
-        problems.push(
-          `${where}: id must not contain "[1m]" - Claude Code then assumes a 1M ` +
-            `context window and ignores CLAUDE_CODE_MAX_CONTEXT_TOKENS.`,
-        );
-      }
-      if (seen.has(e.id.toLowerCase())) {
-        problems.push(`${where}: duplicate id`);
-      }
+      const entryProblems = validateEntry(e, where, seen);
+      problems.push(...entryProblems);
+      if (!e?.id || typeof e.id !== "string") continue;
       seen.add(e.id.toLowerCase());
 
-      if (!e.hf && !e.path) {
-        problems.push(`${where}: needs either \`hf\` or \`path\``);
-      }
-      if (e.hf && e.path) {
-        problems.push(`${where}: set \`hf\` or \`path\`, not both`);
-      }
-      if (typeof e.size_gb !== "number" || e.size_gb <= 0) {
-        problems.push(`${where}: \`size_gb\` must be a positive number`);
-      }
-      if (typeof e.context !== "number" || e.context <= 0) {
-        problems.push(`${where}: \`context\` must be a positive number`);
-      }
-      if (!VALID_TIERS.has(e.tier)) {
-        problems.push(`${where}: \`tier\` must be one of vram|offload|stretch`);
-      }
-      if (!Array.isArray(e.capabilities)) {
-        problems.push(`${where}: \`capabilities\` must be a list`);
-      }
-
-      // Catalog value wins, then the operator's global default, then the derived one.
-      let budget = e.reasoning_budget ?? envDefaultBudget ?? defaultReasoningBudget(e);
-      if (!Number.isInteger(budget) || budget < REASONING_UNRESTRICTED) {
-        problems.push(
-          `${where}: \`reasoning_budget\` must be an integer >= -1 ` +
-            `(-1 unrestricted, 0 off), got ${JSON.stringify(budget)}`,
-        );
-        budget = 0;
-      } else {
-        const { max } = reasoningRange(e);
-        if (budget > max) {
-          problems.push(
-            `${where}: \`reasoning_budget\` ${budget} exceeds half this model's ` +
-              `${e.context}-token window (${max}); the prompt and the answer would ` +
-              `have nowhere left to go`,
-          );
-        }
-      }
-
+      const budget = resolveBudget(e, where, envDefaultBudget, problems);
       const fit = checkFit(e.size_gb ?? 0, e.tier ?? "vram", res);
       resolved.push({
         ...e,
@@ -323,6 +342,76 @@ export class Registry {
     }
     model.reasoningBudget = budget;
     return model;
+  }
+
+  /**
+   * Add a model at runtime, held to exactly the same rules as the baked catalog.
+   *
+   * The image ships a catalog chosen for one 8 GB laptop, which is no basis for deciding
+   * what anyone else may run. This is how a user brings their own: the weights are
+   * fetched by llama-server on first use, so adding an entry costs nothing until it is
+   * asked for.
+   *
+   * The id rules are enforced here for the same reason they are enforced at startup -
+   * both of them fail silently later, and a model that never appears in the picker with
+   * no error is far worse than a rejected POST.
+   */
+  add(entry: ModelEntry, res: HostResources): ResolvedModel {
+    const seen = new Set(this.byId.keys());
+    const problems = validateEntry(entry, "model", seen);
+    const budget = resolveBudget(entry, "model", null, problems);
+    if (problems.length > 0) {
+      throw GatewayError.invalidRequest(problems.join("; "));
+    }
+    if (entry.default) {
+      throw GatewayError.invalidRequest(
+        "a model added at runtime cannot claim `default`; the catalog owns that choice",
+      );
+    }
+
+    const fit = checkFit(entry.size_gb, entry.tier, res);
+    const resolved: ResolvedModel = {
+      ...entry,
+      alias: entry.id,
+      available: fit.fits,
+      reasoningBudget: budget,
+      custom: true,
+      ...(fit.fits ? {} : { unavailableReason: fit.note }),
+    };
+    this.byId.set(entry.id.toLowerCase(), resolved);
+
+    // A host with nothing runnable has no usable default; this may be the first thing
+    // that fits, in which case it should become one.
+    if (this.defaultId === null || this.get(this.defaultId)?.available !== true) {
+      this.defaultId = Registry.pickDefault(this.list());
+    }
+    return resolved;
+  }
+
+  /**
+   * Remove a runtime-added model. Catalog entries are refused: they come from a file the
+   * operator controls, and deleting one through the API would silently diverge the
+   * running gateway from the config that is supposed to describe it.
+   */
+  remove(id: string): void {
+    const model = this.get(id);
+    if (!model) throw GatewayError.notFound("no model with id " + id);
+    if (!model.custom) {
+      throw GatewayError.invalidRequest(
+        model.id + " comes from the catalog file; edit config/models.yaml instead",
+      );
+    }
+    this.byId.delete(model.id.toLowerCase());
+    if (this.defaultId?.toLowerCase() === model.id.toLowerCase()) {
+      this.defaultId = Registry.pickDefault(this.list());
+    }
+  }
+
+  /** Runtime-added models only, for persisting them across a restart. */
+  customEntries(): ModelEntry[] {
+    return this.list()
+      .filter((m) => m.custom)
+      .map(({ available: _a, unavailableReason: _u, alias: _al, custom: _c, reasoningBudget: _r, ...entry }) => entry);
   }
 
   list(): ResolvedModel[] {

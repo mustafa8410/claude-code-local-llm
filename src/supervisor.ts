@@ -54,6 +54,57 @@ const OOM_RETRIES = 3;
 const OOM_BACKOFF_MS = 4_000;
 const PROGRESS_INTERVAL_MS = 5_000;
 
+/**
+ * The argv llama-server is spawned with.
+ *
+ * A pure function of the model and the port, so the decisions encoded here can be
+ * asserted directly. They are worth asserting: each one is silent when wrong. A missing
+ * `--jinja` produces a backend that answers normally and never emits a tool call; a
+ * missing `--no-mmproj` quietly downloads a vision projector for a text-only model; a
+ * wrong `--reasoning` spends the whole reply budget thinking. None of them error.
+ *
+ * Notably absent: the backend credential. It travels in the environment (see start),
+ * because argv is readable by any local process through `ps` and would also land in the
+ * spawn log line, which is printed at info level.
+ */
+export function buildServerArgs(model: ResolvedModel, backendPort: number): string[] {
+  const args: string[] = [];
+  if (model.hf) args.push("-hf", model.hf);
+  else if (model.path) args.push("-m", model.path);
+
+  args.push(
+    "--alias", model.alias,
+    "--host", "127.0.0.1",
+    "--port", String(backendPort),
+    // Tool calling is the entire point. Without --jinja llama-server cannot emit
+    // tool_use blocks and Claude Code's agent loop never starts.
+    "--jinja",
+    "-c", String(model.context),
+  );
+
+  // llama-server downloads the repo's mmproj (multimodal projector) automatically
+  // whenever the repo has one, regardless of whether we intend to use vision. On a
+  // text-only model that is a pure waste - close to 1 GB on some of these repos - paid
+  // on every cold cache, and during container testing it is what tipped a download into
+  // a HuggingFace 429. Ask for it only when the catalog says the model does vision.
+  if (!model.capabilities.includes("vision")) args.push("--no-mmproj");
+
+  // Thinking budget. A reasoning model emits its chain of thought into the same context
+  // the prompt and the answer share, so left unrestricted on a 16K window it will
+  // happily spend the whole reply budget reasoning and never answer - measured in a
+  // container: 64 output tokens, all of them thinking, zero text.
+  if (model.reasoningBudget === 0) {
+    args.push("--reasoning", "off");
+  } else if (model.reasoningBudget > 0) {
+    args.push("--reasoning-budget", String(model.reasoningBudget));
+  }
+  // reasoningBudget === -1 means unrestricted, which is llama-server's own default.
+
+  // Per-model argv last, so a catalog entry can override anything above.
+  if (model.args) args.push(...model.args);
+  return args;
+}
+
 export class Supervisor {
   private state: SupervisorState = "idle";
   private stateSince = Date.now();
@@ -207,49 +258,9 @@ export class Supervisor {
     }
   }
 
-  private buildArgs(model: ResolvedModel): string[] {
-    const args: string[] = [];
-    if (model.hf) args.push("-hf", model.hf);
-    else if (model.path) args.push("-m", model.path);
-
-    args.push(
-      "--alias", model.alias,
-      "--host", "127.0.0.1",
-      "--port", String(this.cfg.backendPort),
-      // The backend credential goes in the environment, not here - see start(). On
-      // argv it is readable by any local process via `ps`, and it would also land in
-      // the "spawn" log line below, which we print at info level.
-      // Tool calling is the entire point. Without --jinja llama-server cannot emit
-      // tool_use blocks and Claude Code's agent loop never starts.
-      "--jinja",
-      "-c", String(model.context),
-    );
-
-    // llama-server downloads the repo's mmproj (multimodal projector) automatically
-    // whenever the repo has one, regardless of whether we intend to use vision. On a
-    // text-only model that is a pure waste - close to 1 GB on some of these repos - paid
-    // on every cold cache, and during container testing it is what tipped a download
-    // into a HuggingFace 429. Ask for it only when the catalog says the model does
-    // vision at all.
-    if (!model.capabilities.includes("vision")) args.push("--no-mmproj");
-
-    // Thinking budget. A reasoning model emits its chain of thought into the same
-    // context the prompt and the answer share, so left unrestricted on a 16K window it
-    // will happily spend the whole reply budget reasoning and never answer - measured
-    // in a container: 64 output tokens, all of them thinking, zero text.
-    if (model.reasoningBudget === 0) {
-      args.push("--reasoning", "off");
-    } else if (model.reasoningBudget > 0) {
-      args.push("--reasoning-budget", String(model.reasoningBudget));
-    }
-    // reasoningBudget === -1 means unrestricted, which is llama-server's own default.
-
-    if (model.args) args.push(...model.args);
-    return args;
-  }
 
   private async start(model: ResolvedModel, onProgress?: ProgressFn): Promise<void> {
-    const args = this.buildArgs(model);
+    const args = buildServerArgs(model, this.cfg.backendPort);
     this.current = model;
     this.setState("loading", "spawning llama-server for " + model.id);
     this.stderrTail = [];
