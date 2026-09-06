@@ -169,6 +169,7 @@ async function forward(
   const upstreamBody = buildUpstreamRequest(prepared, {
     backendAlias: target.alias,
     contextWindow: target.context,
+    reasoningBudget: target.reasoningBudget,
   });
 
   // Propagate client cancellation upstream.

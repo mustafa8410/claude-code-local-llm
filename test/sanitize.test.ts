@@ -180,3 +180,41 @@ test("system array order is preserved so the prompt cache survives", () => {
   const texts = (out.system as { text: string }[]).map((b) => b.text);
   assert.deepEqual(texts, ["first", "second"]);
 });
+
+test("a max_tokens the thinking budget would swallow is refused, not served empty", () => {
+  // A reasoning model writes its chain of thought into the SAME allowance as the
+  // reply, and the budget is a spawn argument that does not shrink to fit. Measured
+  // on the 9B at its 4096 default with max_tokens 500: stop_reason `max_tokens`, 500
+  // output tokens, one `thinking` block, no text. The caller sees a model that
+  // answered nothing and nothing explaining why.
+  const req = {
+    model: "m",
+    max_tokens: 500,
+    messages: [{ role: "user" as const, content: "hi" }],
+  };
+
+  assert.throws(
+    () => buildUpstreamRequest(req, {
+      backendAlias: "m", contextWindow: 65536, reasoningBudget: 4096,
+    }),
+    (err: Error) => {
+      assert.match(err.message, /leaves no room to answer/);
+      assert.match(err.message, /4096/, "must name the budget it is competing with");
+      assert.match(err.message, /admin\/reasoning/, "and how to change it");
+      return true;
+    },
+  );
+
+  // Clearing the bar is fine.
+  const ok = buildUpstreamRequest(
+    { ...req, max_tokens: 8000 },
+    { backendAlias: "m", contextWindow: 65536, reasoningBudget: 4096 },
+  );
+  assert.equal(ok.max_tokens, 8000);
+
+  // A model that does not think has no budget to compete with, so nothing is refused.
+  const nonThinking = buildUpstreamRequest(req, {
+    backendAlias: "m", contextWindow: 65536, reasoningBudget: 0,
+  });
+  assert.equal(nonThinking.max_tokens, 500);
+});

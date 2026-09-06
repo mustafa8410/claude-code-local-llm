@@ -139,6 +139,11 @@ export interface SanitizeOptions {
   backendAlias: string;
   /** The loaded model's total context window, in tokens. */
   contextWindow?: number;
+  /**
+   * The model's `--reasoning-budget`, if it thinks. A request whose max_tokens does
+   * not clear this cannot produce an answer - see the check in buildUpstreamRequest.
+   */
+  reasoningBudget?: number;
 }
 
 /** Never leave the model less room than this to answer in. */
@@ -206,6 +211,28 @@ export function buildUpstreamRequest(
     out.max_tokens = Math.min(requested, available);
   } else {
     out.max_tokens = requested;
+  }
+
+  // Refuse a request that cannot produce an answer, rather than serving an empty one.
+  //
+  // A reasoning model writes its chain of thought into the SAME output allowance as
+  // the reply, and the budget is a spawn argument, so it does not shrink to fit a
+  // small max_tokens. Measured on the 9B at its default 4096-token budget with
+  // max_tokens 500: stop_reason `max_tokens`, 500 output tokens, and a single
+  // `thinking` block with no text at all. To the caller that is a model that answered
+  // nothing, with nothing saying why.
+  //
+  // The threshold is the budget itself rather than budget+slack: at exactly the budget
+  // there is room for zero answer tokens, and below it the thinking cannot even finish.
+  const budget = opts.reasoningBudget ?? 0;
+  const effective = typeof out.max_tokens === "number" ? out.max_tokens : requested;
+  if (budget > 0 && effective <= budget) {
+    throw GatewayError.invalidRequest(
+      "max_tokens (" + effective + ") leaves no room to answer: this model thinks " +
+        "before it replies and its reasoning budget is " + budget + " tokens, taken " +
+        "from the same allowance. Raise max_tokens above " + budget + ", or lower the " +
+        "budget with POST /admin/reasoning?budget=N (0 turns thinking off).",
+    );
   }
 
   return out;
