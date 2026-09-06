@@ -147,17 +147,31 @@ export function buildClientEnv(
 
   const all = registry.list();
 
-  // Tiers follow the primary by default. TIER_MODE=distinct opts into one model per
-  // tier; TIER_OPUS/SONNET/HAIKU override either way. See the block above pickTiers.
-  const auto = cfg.tierMode === "distinct"
-    ? pickTiers(all, model.id)
-    : { opus: model.id, sonnet: model.id, haiku: model.id };
-  const tiers = {
-    opus: cfg.tierOpus ?? auto.opus,
-    sonnet: cfg.tierSonnet ?? auto.sonnet,
-    haiku: cfg.tierHaiku ?? auto.haiku,
-  };
   const byId = (id: string): ResolvedModel | undefined => all.find((m) => m.id === id);
+
+  // Only name a model in a tier slot when someone has asked for that explicitly.
+  // Leaving them unset is what keeps side tasks on the loaded model; see the block
+  // where these are spread into env.
+  const tierEnv: Record<string, string> = {};
+  if (cfg.tierMode === "distinct" || cfg.tierOpus || cfg.tierSonnet || cfg.tierHaiku) {
+    const auto = cfg.tierMode === "distinct"
+      ? pickTiers(all, model.id)
+      : { opus: model.id, sonnet: model.id, haiku: model.id };
+    const tiers = {
+      opus: cfg.tierOpus ?? auto.opus,
+      sonnet: cfg.tierSonnet ?? auto.sonnet,
+      haiku: cfg.tierHaiku ?? auto.haiku,
+    };
+    tierEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = tiers.opus;
+    tierEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = tiers.sonnet;
+    tierEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = tiers.haiku;
+    tierEnv.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME = tiers.opus;
+    tierEnv.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = tiers.sonnet;
+    tierEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = tiers.haiku;
+    tierEnv.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION = tierNote(byId(tiers.opus), "best quality");
+    tierEnv.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION = tierNote(byId(tiers.sonnet), "balanced");
+    tierEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION = tierNote(byId(tiers.haiku), "fastest");
+  }
 
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: "http://localhost:" + cfg.port,
@@ -166,26 +180,28 @@ export function buildClientEnv(
     // placeholder is fine and the gateway ignores it.
     ANTHROPIC_AUTH_TOKEN: cfg.gatewayApiKey ?? "local-gateway",
 
-    // The model a request goes to when no tier is chosen.
+    // The model a request goes to when nothing else names one.
     ANTHROPIC_MODEL: model.id,
-    // The three /model rows. Distinct on purpose - see pickTiers.
-    ANTHROPIC_DEFAULT_OPUS_MODEL: tiers.opus,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: tiers.sonnet,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: tiers.haiku,
-    // Labels, so the picker reads as three real choices rather than three ids.
-    ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: tiers.opus,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: tiers.sonnet,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: tiers.haiku,
-    ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION: tierNote(byId(tiers.opus), "best quality"),
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: tierNote(byId(tiers.sonnet), "balanced"),
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: tierNote(byId(tiers.haiku), "fastest"),
 
-    // Subagents follow the primary deliberately. A subagent is spawned by the agent
-    // rather than chosen by the user, so letting it name a second model would swap the
-    // backend mid-task - the one case where a swap is nobody's decision. (Subagents can
-    // be switched off entirely: they need the `Task` tool, which no TOOL_PROFILE
-    // includes, so setting any profile disables them.)
-    CLAUDE_CODE_SUBAGENT_MODEL: model.id,
+    // THE TIER AND SUBAGENT SLOTS ARE DELIBERATELY LEFT UNSET. See TIER SLOTS above.
+    //
+    // Left alone, Claude Code fills them with its own Anthropic ids, which this
+    // registry never contains. That makes every side task - titling, compaction's
+    // summarising step, subagents - arrive as an id we do not recognise, which is
+    // exactly the case BACKGROUND_STRATEGY=reuse-primary was written for: it serves
+    // them from whatever is already loaded and never swaps. Verified directly: with the
+    // 2B resident, a request for `claude-3-5-haiku-20241022` was answered by the 2B
+    // with the swap counter unmoved.
+    //
+    // Naming local models here breaks that, because chooseTarget honours a recognised
+    // id verbatim - and it breaks it in a way that gets worse when you switch models,
+    // since these are static strings fixed when the config was generated. Pick a
+    // different model from the picker and the tiers still point at the old one, so
+    // every side task drags the backend back.
+    //
+    // The id space does the work instead: a LOCAL id means you chose it and a swap is
+    // right; an ANTHROPIC id means the agent did, and it is served from what is loaded.
+    ...tierEnv,
 
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.context),
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(output),

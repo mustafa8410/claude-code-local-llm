@@ -84,38 +84,39 @@ async function registry(body = CATALOG): Promise<Registry> {
   return Registry.load(file, HOST);
 }
 
-test("the subagent slot follows the primary, whatever the tiers do", async () => {
-  // The invariant that survived. Tiers are a user's deliberate choice and a swap is
-  // the fair price; a subagent is spawned by the agent, so a second id there would
-  // swap the backend mid-task on nobody's decision. That one must stay pinned.
+test("only the main slot names a model; tier and subagent slots are left unset", async () => {
+  // This is what keeps side tasks off the swap path, and it has to hold no matter
+  // which model is primary.
+  //
+  // Unset, Claude Code fills these with its own Anthropic ids, which this registry
+  // never contains - so titling, compaction's summarising step and subagents all
+  // arrive unrecognised and BACKGROUND_STRATEGY=reuse-primary serves them from
+  // whatever is loaded. Verified against the container: with the 2B resident, a
+  // request for `claude-3-5-haiku-20241022` was answered by the 2B, swap count
+  // unmoved.
+  //
+  // Naming local models here breaks it, because chooseTarget honours a recognised id
+  // verbatim - and it breaks worse over time, since these are static strings fixed
+  // when the config was generated. Switch model in the picker and the tiers still
+  // point at the old one, dragging the backend back on every side task. That was
+  // measured as a backend reaching ready and being torn down 17 ms later, repeatedly,
+  // with `backend unreachable: fetch failed` in between.
   const reg = await registry();
 
   for (const requested of [null, "local-claude-small"]) {
     const { model, env } = buildClientEnv(reg, CFG, requested);
-    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, model, `subagent must follow ${model}`);
-    assert.equal(env.ANTHROPIC_MODEL, model, "and the main slot IS the primary");
-  }
-});
-
-test("by default every tier follows the primary, because alternating them thrashes", async () => {
-  // Giving each tier its own model was tried and reverted. Claude Code runs side tasks
-  // - titling, and compaction's summarising step - on the small tier by design, so an
-  // interactive session alternated 9B/2B and spent itself loading them: a backend
-  // reaching ready and being torn down 17 ms later, over and over, with
-  // `backend unreachable: fetch failed` in between.
-  //
-  // A --print measurement said otherwise and was wrong; it has neither compaction nor
-  // background work. The picker gets its real choices from gateway model discovery,
-  // which offers the whole catalog rather than three of it.
-  const reg = await registry();
-  const { model, env } = buildClientEnv(reg, CFG, null);
-
-  for (const key of [
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  ]) {
-    assert.equal(env[key], model, `${key} must follow the primary; a second id thrashes`);
+    assert.equal(env.ANTHROPIC_MODEL, model, "the main slot IS the primary");
+    for (const key of [
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+    ]) {
+      assert.equal(
+        env[key], undefined,
+        `${key} must stay unset - naming a local model here puts side tasks on the swap path`,
+      );
+    }
   }
 });
 
