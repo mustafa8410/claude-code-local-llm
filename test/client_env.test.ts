@@ -1,33 +1,34 @@
 /**
  * client-env contract tests.
  *
- * These variables are how Claude Code names a model, and they split by ROLE.
+ * These variables are how Claude Code names a model, and only ONE of them is set.
  *
- * Every slot used to carry the same id, because one model is resident and a second id
- * anywhere costs a 10-90s swap. That was true and still wrong: it made `/model` show
- * one name three times, and made the entire swap path unreachable.
+ * ANTHROPIC_MODEL carries the primary. The tier and subagent slots are deliberately
+ * left unset, so Claude Code fills them with its own Anthropic ids - which this
+ * registry never contains, so reuse-primary serves those side tasks from whatever is
+ * already loaded and never swaps.
  *
- * Giving the tiers a model each was then tried, and reverted, because Claude Code runs
- * side tasks on the small tier by design and an interactive session alternated between
- * two models until requests began failing. So every slot follows the primary again -
- * but for a different reason than before, and with a different way out:
+ * Two earlier designs failed. Pinning every slot to one id showed the same model three
+ * times in the picker. Giving each tier its own model thrashed an interactive session
+ * to a halt, because Claude Code runs titling and compaction's summarising step on the
+ * small tier by design. Pinning also cannot survive a model switch: these are static
+ * strings, so the tiers keep naming the model that was primary when the config was
+ * generated.
  *
- *   TIER slots     follow the primary. TIER_MODE=distinct opts out.
- *   SUBAGENT slot  follows the primary, always. A subagent is spawned by the agent,
- *                  so a swap there is nobody's decision.
- *   the picker     gets its choices from gateway model DISCOVERY, which lists the
- *                  whole catalog - not from these three variables.
+ * The picker's real choices come from gateway model DISCOVERY, which lists the whole
+ * catalog rather than three of it.
  *
- * That last line is what makes the pinning acceptable now and did not exist before.
+ * The sh/ps1 outputs are EXECUTED by the caller, so their values are quoted as code.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Registry } from "../src/registry.ts";
-import { buildClientEnv } from "../src/anthropic/client_env.ts";
+import { buildClientEnv, shQuote, ps1Quote } from "../src/anthropic/client_env.ts";
 import type { Config } from "../src/config.ts";
 import type { HostResources } from "../src/types.ts";
 
@@ -117,6 +118,45 @@ test("only the main slot names a model; tier and subagent slots are left unset",
         `${key} must stay unset - naming a local model here puts side tasks on the swap path`,
       );
     }
+  }
+});
+
+test("sh and ps1 output quote their values, because the caller executes them", () => {
+  // The documented usage is `eval "$(curl ...)"`, so every value emitted here is code.
+  // Values were interpolated into `export K="<value>"`, which is not quoting: a double
+  // quote ends the string early and `$(...)` or a backtick runs in the user's shell.
+  // Reachable, not theoretical - display_name comes from the catalog, and a model added
+  // through POST /admin/models carries whatever name the caller supplied.
+  const nasty = `x"; touch /tmp/pwned; echo "$(whoami)` + " `id` 'quoted'";
+  const shOut = shQuote(nasty);
+  const psOut = ps1Quote(nasty);
+
+  // Round-trip through a real shell is the only assertion worth making here.
+  const back = execFileSync("bash", ["-c", `printf %s ${shOut}`], { encoding: "utf8" });
+  assert.equal(back, nasty, "bash must see the value verbatim, not run any of it");
+
+  // Nothing was created, so no substitution ran.
+  assert.ok(!existsSync("/tmp/pwned"), "command substitution must not have executed");
+
+  // PowerShell single-quoting: literal, with '' as the only escape.
+  assert.ok(psOut.startsWith("'") && psOut.endsWith("'"));
+  assert.ok(!psOut.slice(1, -1).includes("'") || psOut.includes("''"));
+});
+
+test("the unset tiers are still labelled, so the picker does not advertise Fable", async () => {
+  // Leaving the model vars unset is correct and has a cosmetic cost: those rows then
+  // display Claude Code's own names - Fable, Opus, Sonnet - none of which exist here.
+  // Picking one silently serves whatever is loaded, so the picker would be offering
+  // models the user cannot have. The *_NAME vars are read independently of the model
+  // vars, so a label can be supplied without putting side tasks back on the swap path.
+  const reg = await registry();
+  const { env } = buildClientEnv(reg, CFG, null);
+
+  for (const tier of ["OPUS", "SONNET", "HAIKU"]) {
+    assert.match(env[`ANTHROPIC_DEFAULT_${tier}_MODEL_NAME`] ?? "", /local/i, tier);
+    assert.ok(env[`ANTHROPIC_DEFAULT_${tier}_MODEL_DESCRIPTION`], `${tier} needs a description`);
+    // The label must not smuggle a model in through the back door.
+    assert.equal(env[`ANTHROPIC_DEFAULT_${tier}_MODEL`], undefined);
   }
 });
 

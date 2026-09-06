@@ -15,8 +15,12 @@
  * truth the backend is launched with, instead of being copied into a README and
  * going stale the moment someone edits models.yaml.
  *
- * EVERY MODEL SLOT IS PINNED TO THE SAME ID. See MODEL_SLOTS below - the repetition
- * is the point, not an oversight.
+ * ONLY ANTHROPIC_MODEL NAMES A MODEL. The tier and subagent slots are deliberately
+ * left unset so Claude Code fills them with its own ids, which this registry never
+ * contains - which is what keeps side tasks off the swap path. See pickTiers.
+ *
+ * THE SH AND PS1 OUTPUTS ARE EXECUTED by the caller, so every value in them is code.
+ * See shQuote/ps1Quote before adding a field.
  */
 
 import type { ServerResponse } from "node:http";
@@ -36,32 +40,6 @@ const MIN_OUTPUT = 1024;
  * pruning is mandatory rather than optional.
  */
 const TOOLSET_TOKENS = 32768;
-
-/**
- * Every variable through which Claude Code can name a model.
- *
- * These used to be pinned to a single id, on the reasoning that one model is resident
- * so naming a second anywhere costs a 10-90s swap. That is true, and it was still the
- * wrong trade: it made `/model` show the same name three times, and it made the whole
- * swap path - keepalives during eviction, single-flight, the supervisor's reload -
- * dead weight, since nothing could ever ask for a different model.
- *
- * They now split by role. The three TIER slots take different models, because choosing
- * one is a deliberate act and a swap is the correct price for it. The SUBAGENT slot
- * stays on the primary, because a subagent is spawned by the agent rather than chosen
- * by the user - that is the one case where a swap would be nobody's decision.
- *
- * Serving two models at once would still need a second llama-server process and
- * combined VRAM accounting; the supervisor is built around exactly one backend, so
- * these remain choices between models rather than a way to run several.
- */
-const MODEL_SLOTS = [
-  "ANTHROPIC_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "CLAUDE_CODE_SUBAGENT_MODEL",
-] as const;
 
 /**
  * Which model each `/model` tier selects.
@@ -96,9 +74,15 @@ const MODEL_SLOTS = [
  * reproduced. With every slot pinned to one id the same alternation could not swap
  * models, so it surfaced as budget churn instead. One cause, two symptoms.
  *
- * So the tiers follow the primary, and the picker gets its choices from gateway model
- * discovery instead - which lists the entire catalog, not three of it. TIER_MODE=distinct
- * turns this on for anyone who wants it, and TIER_* pins individual slots either way.
+ * So by default the tier slots are not emitted at all. Claude Code then fills them with
+ * its own Anthropic ids, this registry does not recognise those, and reuse-primary
+ * serves them from whatever is loaded without swapping - which also survives the user
+ * switching model, where a pinned local id would not, because these are static strings
+ * fixed when the config was generated. The picker gets its real choices from gateway
+ * model discovery, which lists the whole catalog.
+ *
+ * TIER_MODE=distinct calls this and emits explicit slots for anyone who wants them;
+ * TIER_OPUS/SONNET/HAIKU pin individual ones.
  */
 function pickTiers(
   candidates: readonly ResolvedModel[],
@@ -129,6 +113,31 @@ function pickTiers(
   // larger one rather than inventing a third.
   const sonnet = bySize.length >= 3 ? bySize[Math.floor((bySize.length - 1) / 2)]! : opus;
   return { opus: opus.id, sonnet: sonnet.id, haiku: haiku.id };
+}
+
+/**
+ * Quote a value for `eval`, and for `Invoke-Expression`.
+ *
+ * These outputs are designed to be EXECUTED - the documented usage is
+ * `eval "$(curl ...)"` - so anything interpolated into them is code. They were built by
+ * wrapping values in double quotes, which is not quoting at all: a value containing a
+ * double quote breaks out of the string, and one containing `$(...)` or a backtick runs
+ * as a command in the user's shell.
+ *
+ * That is reachable, not theoretical. Values include `display_name` from the catalog,
+ * and a model added at runtime through POST /admin/models carries whatever name the
+ * caller chose. Found because a description of mine contained quotes and produced
+ * visibly broken output; the injection was the same bug wearing a hat.
+ *
+ * Single quotes are literal in both shells. Neither lets you escape the quote character
+ * inside them, so both use the standard trick of closing, emitting one, and reopening.
+ */
+export function shQuote(v: string): string {
+  return "'" + v.replace(/'/g, `'\\''`) + "'";
+}
+
+export function ps1Quote(v: string): string {
+  return "'" + v.replace(/'/g, "''") + "'";
 }
 
 /** A short, honest description for the picker row. */
@@ -171,6 +180,22 @@ export function buildClientEnv(
     tierEnv.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION = tierNote(byId(tiers.opus), "best quality");
     tierEnv.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION = tierNote(byId(tiers.sonnet), "balanced");
     tierEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION = tierNote(byId(tiers.haiku), "fastest");
+  } else {
+    // The slots stay unset - that is the whole point - but their LABELS do not have to.
+    // Claude Code reads `ANTHROPIC_DEFAULT_<tier>_MODEL_NAME ?? <the model id>`, so a
+    // name can be supplied without naming a model and putting side tasks back on the
+    // swap path.
+    //
+    // Worth doing because the alternative is worse than a duplicate: unlabelled, these
+    // rows show Claude Code's own model names - Fable, Opus, Sonnet - which do not
+    // exist on this gateway. Picking one silently serves whatever is loaded, so the
+    // picker would be advertising models the user cannot actually have.
+    const routed = "(local - whichever model is loaded)";
+    const explain = "not a separate model - pick one from the gateway list below";
+    for (const tier of ["OPUS", "SONNET", "HAIKU"]) {
+      tierEnv["ANTHROPIC_DEFAULT_" + tier + "_MODEL_NAME"] = routed;
+      tierEnv["ANTHROPIC_DEFAULT_" + tier + "_MODEL_DESCRIPTION"] = explain;
+    }
   }
 
   const env: Record<string, string> = {
@@ -321,9 +346,9 @@ export function handleClientEnv(
 
   if (format === "sh" || format === "ps1") {
     const lines: string[] = [];
-    for (const note of notes) lines.push("# " + note);
+    for (const note of notes) lines.push("# " + note.replace(/\r?\n/g, " "));
     for (const [k, v] of Object.entries(env)) {
-      lines.push(format === "ps1" ? `$env:${k} = "${v}"` : `export ${k}="${v}"`);
+      lines.push(format === "ps1" ? `$env:${k} = ${ps1Quote(v)}` : `export ${k}=${shQuote(v)}`);
     }
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     res.end(lines.join("\n") + "\n");
