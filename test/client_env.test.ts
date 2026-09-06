@@ -133,3 +133,41 @@ models:
     `expected a tool-support warning, got ${JSON.stringify(notes)}`,
   );
 });
+
+test("the pruning warning appears only when the window cannot hold the tool set", async () => {
+  // Claude Code 2.1.236 sends ~27,800 tokens of system prompt and tool schemas before
+  // the conversation starts. On a 16K model an unpruned session fails on its FIRST
+  // message; a 64K model serves it comfortably. Telling a 64K user to prune is stale
+  // advice from when the default was 16K, and it costs them tools for nothing.
+  const small = await registry(`
+models:
+  - id: local-claude-tight
+    hf: org/x:Q4_K_M
+    size_gb: 1
+    context: 16384
+    capabilities: [tools]
+    tier: vram
+    default: true
+`);
+  const tight = buildClientEnv(small, CFG, null).notes;
+  assert.ok(
+    tight.some((n) => /REQUIRED/.test(n) && /tools/.test(n)),
+    `a 16K window must be told pruning is mandatory, got ${JSON.stringify(tight)}`,
+  );
+
+  const big = await registry(`
+models:
+  - id: local-claude-roomy
+    hf: org/x:Q4_K_M
+    size_gb: 1
+    context: 65536
+    capabilities: [tools]
+    tier: vram
+    default: true
+`);
+  const roomy = buildClientEnv(big, CFG, null).notes;
+  assert.ok(
+    !roomy.some((n) => /--tools|TOOL_PROFILE/.test(n)),
+    `a 64K window must NOT be nagged about pruning, got ${JSON.stringify(roomy)}`,
+  );
+});

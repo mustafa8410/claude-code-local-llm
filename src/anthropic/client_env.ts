@@ -28,6 +28,16 @@ const OUTPUT_SHARE = 0.25;
 const MIN_OUTPUT = 1024;
 
 /**
+ * Smallest window that holds Claude Code's opening request unpruned.
+ *
+ * Measured on 2.1.236: ~27,800 tokens of system prompt and tool schemas arrive before
+ * the conversation starts. A 32K model serves that; a 16K one fails on its first
+ * message with `prompt is too long`. Used to decide whether to tell the user that tool
+ * pruning is mandatory rather than optional.
+ */
+const TOOLSET_TOKENS = 32768;
+
+/**
  * Every variable through which Claude Code can name a model. All of them are set to
  * the SAME id, and that is deliberate.
  *
@@ -90,14 +100,77 @@ export function buildClientEnv(
         "loop will not work with it. Pick a model whose capabilities include `tools`.",
     );
   }
-  notes.push(
-    "Launch with a reduced tool set - tool schemas were measured at 81% of a Claude " +
-      "Code request: claude --tools \"Read,Edit,Grep,Glob,Bash\"",
-  );
+  // Only nag about pruning when the window genuinely cannot hold Claude Code's opening
+  // request. Measured on 2.1.236: ~27,800 tokens of system prompt plus tool schemas
+  // before the conversation starts. A 32K window swallows that; 16K fails on the FIRST
+  // message. Telling someone with a 64K model to prune is stale advice from when the
+  // default was 16K, and it costs them tools they could have had.
+  if (model.context < TOOLSET_TOKENS) {
+    notes.push(
+      "REQUIRED: " + model.id + " has a " + model.context + "-token window, and Claude " +
+        "Code sends ~27,800 tokens of tool schemas before you type anything - an " +
+        'unpruned session fails on its first message. Run `claude --tools ' +
+        '"Read,Edit,Grep,Glob,Bash"`, or set TOOL_PROFILE=coding on the container.',
+    );
+  }
   if (!model.available) {
     notes.push("WARNING: " + model.id + " is unavailable: " + (model.unavailableReason ?? ""));
   }
   return { model: model.id, env, notes };
+}
+
+/**
+ * The block printed once at startup, so the container tells you how to use it.
+ *
+ * Deliberately written to STDOUT rather than through `log`, because the log line
+ * prefix (timestamp, level) would end up inside anything you copied. The whole point
+ * is that the JSON below can be selected and pasted without editing - including out of
+ * Docker Desktop's log pane, which is where most people will first meet this.
+ *
+ * The values come from buildClientEnv, so they cannot drift from what
+ * /admin/client-env serves or from the model actually loaded.
+ */
+export function startupBanner(registry: Registry, cfg: Config): string {
+  const { model, env, notes } = buildClientEnv(registry, cfg, null);
+  const url = env.ANTHROPIC_BASE_URL ?? "http://localhost:" + cfg.port;
+  const settings = JSON.stringify({ env }, null, 2);
+  const bar = "=".repeat(78);
+
+  const lines = [
+    "",
+    bar,
+    "  claude-code-local-llm is ready at " + url,
+    "  serving: " + model,
+    bar,
+    "",
+    "  OPTION A - point Claude Code at it permanently.",
+    "  Paste this into your Claude Code settings file:",
+    "",
+    "    Linux/macOS   ~/.claude/settings.json",
+    "    Windows       %USERPROFILE%\\.claude\\settings.json",
+    "",
+    settings.split("\n").map((l) => "  " + l).join("\n"),
+    "",
+    "  OPTION B - just this shell session:",
+    "",
+    // The URL is quoted: `?` is a glob character, and an unquoted URL only survives
+    // because bash leaves a non-matching glob alone - which stops being true under
+    // `failglob`, and was never true in zsh, where it is an outright error.
+    '    bash    eval "$(curl -s \'' + url + "/admin/client-env?format=sh' | grep ^export)\"",
+    "    pwsh    curl -s '" + url + "/admin/client-env?format=ps1' | iex",
+    "",
+    "  Then run Claude Code as usual:",
+    "",
+    "    claude",
+    // Only open a gap when there is actually something to put in it.
+    ...(notes.length > 0 ? ["", ...notes.map((n) => "  ! " + n)] : []),
+    "",
+    "  Other models:  curl -s " + url + "/admin/models",
+    "  Config for one: curl -s '" + url + "/admin/client-env?model=<id>'",
+    bar,
+    "",
+  ];
+  return lines.join("\n");
 }
 
 export function handleClientEnv(

@@ -19,7 +19,7 @@ import { GatewayError, toEnvelope } from "./anthropic/errors.ts";
 import { handleMessages, readJsonBody } from "./anthropic/messages.ts";
 import { handleCountTokens } from "./anthropic/count_tokens.ts";
 import { handleModels } from "./anthropic/models.ts";
-import { handleClientEnv } from "./anthropic/client_env.ts";
+import { handleClientEnv, startupBanner } from "./anthropic/client_env.ts";
 import { availableProfiles, isKnownProfile, describeProfiles } from "./tools/prune.ts";
 import type { ModelEntry } from "./types.ts";
 
@@ -533,6 +533,12 @@ async function main(): Promise<void> {
       url: "http://localhost:" + cfg.port,
       hint: "ANTHROPIC_BASE_URL=http://localhost:" + cfg.port,
     });
+    // The container should tell you how to use it, not leave you to find the endpoint
+    // that would have told you. Suppress with NO_BANNER=1 when running it as a service
+    // and the logs are being shipped somewhere.
+    if (process.env.NO_BANNER !== "1") {
+      process.stdout.write(startupBanner(registry, cfg));
+    }
   });
 }
 
