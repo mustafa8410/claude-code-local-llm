@@ -23,7 +23,16 @@ eval "$(curl -s 'http://localhost:8787/admin/client-env?format=sh' | grep ^expor
 claude --tools "Read,Edit,Grep,Glob,Bash"
 ```
 
-PowerShell: `curl -s 'http://localhost:8787/admin/client-env?format=ps1' | iex`
+PowerShell — note `curl.exe`, not `curl`:
+
+```powershell
+curl.exe -s "http://localhost:8787/admin/client-env?format=ps1" | Invoke-Expression
+```
+
+In Windows PowerShell `curl` is an **alias for `Invoke-WebRequest`**, so `-s` binds as a
+PowerShell parameter and the command fails with *"missing mandatory parameters: Uri"*
+before fetching anything. `curl.exe` calls the real binary, which Windows has shipped in
+`System32` since 1803.
 
 The first request downloads the model (~5.6 GB for the default) into a volume and
 streams keepalives while it happens, so the session does not time out.

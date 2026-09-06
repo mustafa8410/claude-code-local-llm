@@ -157,7 +157,11 @@ export function startupBanner(registry: Registry, cfg: Config): string {
     // because bash leaves a non-matching glob alone - which stops being true under
     // `failglob`, and was never true in zsh, where it is an outright error.
     '    bash    eval "$(curl -s \'' + url + "/admin/client-env?format=sh' | grep ^export)\"",
-    "    pwsh    curl -s '" + url + "/admin/client-env?format=ps1' | iex",
+    // curl.exe, not curl. In Windows PowerShell `curl` is an ALIAS for
+    // Invoke-WebRequest, so `-s` binds as a PowerShell parameter and the command dies
+    // with "missing mandatory parameters: Uri" before it ever fetches anything. That
+    // is the default shell on the platform this container is most often run from.
+    "    pwsh    curl.exe -s '" + url + "/admin/client-env?format=ps1' | Invoke-Expression",
     "",
     "  Then run Claude Code as usual:",
     "",
