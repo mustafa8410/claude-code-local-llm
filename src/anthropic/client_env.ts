@@ -166,7 +166,21 @@ export function buildClientEnv(
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.context),
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(output),
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    // NOT setting CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, deliberately.
+    //
+    // It was set to 1 here to keep Claude Code from chattering at Anthropic. It also
+    // turns off gateway model discovery, which is what fills the `/model` picker with
+    // the catalog: the fetch begins `if (!x7s()) return; if (_a()) return;` and `_a()`
+    // is precisely "this variable is set". So the gateway published a catalog of six
+    // models over /v1/models and then, in the same breath, told the client not to ask
+    // for it - leaving the picker showing only the three tier slots.
+    //
+    // Proven by removing it: ~/.claude/cache/gateway-models.json appears immediately,
+    // tagged baseUrl=http://localhost:8787, holding all six ids.
+    //
+    // Dropping it costs little here. The discovery request goes to ANTHROPIC_BASE_URL,
+    // which is this gateway on loopback - not to Anthropic. Set it yourself if you want
+    // the quietest possible client and can live with a three-row picker.
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
     MAX_THINKING_TOKENS: "0",
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",

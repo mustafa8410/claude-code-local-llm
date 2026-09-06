@@ -125,6 +125,24 @@ test("the /model tiers name different models, or the picker is pointless", async
   assert.ok(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION?.includes("context"));
 });
 
+test("the emitted config does not switch off model discovery", async () => {
+  // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 used to be emitted here to keep the
+  // client quiet. It also gates gateway model discovery - the fetch opens with
+  // `if (_a()) return`, and _a() is exactly "that variable is set" - so the gateway
+  // served a six-model catalog on /v1/models and told the client not to ask for it.
+  // The `/model` picker was stuck on the three tier rows as a result.
+  //
+  // Proven by removing it: gateway-models.json appears at once with all six ids.
+  const reg = await registry();
+  const { env } = buildClientEnv(reg, CFG, null);
+  assert.equal(
+    env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+    undefined,
+    "setting this silently empties the /model picker",
+  );
+  assert.equal(env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, "1", "and this enables it");
+});
+
 test("TIER_* overrides the automatic pick", async () => {
   const reg = await registry();
   const pinned = { ...CFG, tierOpus: "local-claude-small", tierHaiku: "local-claude-small" };
