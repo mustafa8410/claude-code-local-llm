@@ -214,38 +214,29 @@ export function buildUpstreamRequest(
     out.max_tokens = requested;
   }
 
-  // Make room for the answer when the model thinks first, rather than refusing.
+  // Widen max_tokens when the model thinks first AND there is room to do so.
   //
   // A reasoning model writes its chain of thought into the SAME output allowance as
   // the reply, and --reasoning-budget is a spawn argument, so it does not shrink to
-  // fit a small max_tokens. On the 9B at its 4096 default with max_tokens 500, the
-  // measured result was stop_reason `max_tokens`, 500 output tokens, one `thinking`
-  // block, and no text: a model that answered nothing.
+  // fit. On the 9B at its 4096 default with max_tokens 500, the measured result was
+  // stop_reason `max_tokens`, 500 output tokens, one `thinking` block, and no text.
   //
-  // This first REFUSED such a request, on the principle that failing loudly beats
-  // behaving strangely. That was wrong in practice, and a real session proved it:
-  // Claude Code sends small max_tokens of its own accord - 558 was observed - so the
-  // refusal turned working-but-degraded traffic into a hard 400 mid-session. The
-  // request is not unreasonable; it just has to be sized to include the thinking the
-  // backend is going to do regardless.
+  // TWO EARLIER VERSIONS OF THIS REJECTED THE REQUEST, and both were wrong. The
+  // premise - that failing loudly beats behaving strangely - does not survive contact
+  // with the fact that the gateway cannot tell a doomed request from a fine one. It
+  // rejected `hey` on a 4B whose window the tool schemas had already filled, which is
+  // a worse outcome than a short answer and is not something the caller can act on:
+  // they did not choose max_tokens, Claude Code did, and they cannot see the budget.
   //
-  // So raise it, silently, to the budget plus room for an actual answer - the number
-  // the caller would have asked for had they known about the budget - and only refuse
-  // when even that will not fit the window.
+  // So: widen when it fits, and otherwise do nothing at all and let the model answer
+  // with whatever room is left. A brief reply beats an error, and a request that
+  // genuinely cannot fit its prompt is already caught above by `prompt is too long`,
+  // which is the wording Claude Code's own compaction path keys on.
   const budget = opts.reasoningBudget ?? 0;
   const effective = typeof out.max_tokens === "number" ? out.max_tokens : requested;
   if (budget > 0 && effective <= budget) {
     const needed = budget + MIN_OUTPUT_TOKENS;
-    if (available === null || needed <= available) {
-      out.max_tokens = needed;
-    } else {
-      throw GatewayError.invalidRequest(
-        "this model thinks before it replies, and its reasoning budget (" + budget +
-          " tokens) plus room to answer does not fit what the prompt left of the " +
-          "context window (" + available + " tokens). Shorten the prompt, or lower " +
-          "the budget with POST /admin/reasoning?budget=N (0 turns thinking off).",
-      );
-    }
+    if (available === null || needed <= available) out.max_tokens = needed;
   }
 
   return out;

@@ -217,13 +217,17 @@ test("a max_tokens the thinking budget would swallow is widened, not refused", (
   });
   assert.equal(nonThinking.max_tokens, 558);
 
-  // Only when even budget+answer cannot fit what the prompt left is it an error, and
-  // the message then points at the prompt and the budget rather than at max_tokens,
-  // which the caller could not have set any better.
-  assert.throws(
-    () => buildUpstreamRequest(req, {
-      backendAlias: "m", contextWindow: 4200, reasoningBudget: 4096,
-    }),
-    /does not fit|prompt is too long/,
+  // And when there is NOT room to widen, the request still goes through. An earlier
+  // version threw here; it rejected a bare "hey" on a 4B whose window the tool
+  // schemas had already filled, which is worse than a short answer and is not
+  // something the caller can act on - they did not pick max_tokens, and they cannot
+  // see the budget. A prompt that genuinely does not fit is caught further up with
+  // `prompt is too long`, which is the wording Claude Code's compaction keys on.
+  const cramped = buildUpstreamRequest(req, {
+    backendAlias: "m", contextWindow: 5000, reasoningBudget: 4096,
+  });
+  assert.ok(
+    typeof cramped.max_tokens === "number" && cramped.max_tokens > 0,
+    "a cramped window must still produce a request, not an error",
   );
 });
