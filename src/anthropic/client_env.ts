@@ -20,7 +20,7 @@
  */
 
 import type { ServerResponse } from "node:http";
-import type { Registry } from "../registry.ts";
+import type { Registry, ResolvedModel } from "../registry.ts";
 import type { Config } from "../config.ts";
 
 /** Fraction of the window handed to output; the rest is prompt headroom. */
@@ -38,27 +38,22 @@ const MIN_OUTPUT = 1024;
 const TOOLSET_TOKENS = 32768;
 
 /**
- * Every variable through which Claude Code can name a model. All of them are set to
- * the SAME id, and that is deliberate.
+ * Every variable through which Claude Code can name a model.
  *
- * Claude Code drives several model slots - main, the Opus/Sonnet/Haiku tier aliases,
- * and a subagent slot. A hosted provider can point them at different models because
- * every model is resident at once. We hold exactly one model in VRAM, so naming a
- * second one anywhere here means the slot that uses it is a genuine, explicitly
- * requested id: `fellBack` is false, RequestContext.chooseTarget honours it verbatim,
- * and the backend swaps. The next main-slot request swaps back. That is a 10-90s
- * eviction per turn - precisely the thrash BACKGROUND_STRATEGY=reuse-primary exists to
- * prevent, and reuse-primary CANNOT prevent it here, because it only engages for ids
- * the registry does not recognise.
+ * These used to be pinned to a single id, on the reasoning that one model is resident
+ * so naming a second anywhere costs a 10-90s swap. That is true, and it was still the
+ * wrong trade: it made `/model` show the same name three times, and it made the whole
+ * swap path - keepalives during eviction, single-flight, the supervisor's reload -
+ * dead weight, since nothing could ever ask for a different model.
  *
- * Pinning every slot also removes a fragile assumption. Without these, correct
- * behaviour depends on Claude Code's background slot happening to send an id we do not
- * recognise - an inference about another program's defaults, which can change under
- * us. Pinned, every slot sends a known id, nothing ever falls back, and reuse-primary
- * becomes a safety net rather than the load-bearing mechanism.
+ * They now split by role. The three TIER slots take different models, because choosing
+ * one is a deliberate act and a swap is the correct price for it. The SUBAGENT slot
+ * stays on the primary, because a subagent is spawned by the agent rather than chosen
+ * by the user - that is the one case where a swap would be nobody's decision.
  *
- * Serving two models at once would need a second llama-server process and combined
- * VRAM accounting; the supervisor is built around exactly one backend.
+ * Serving two models at once would still need a second llama-server process and
+ * combined VRAM accounting; the supervisor is built around exactly one backend, so
+ * these remain choices between models rather than a way to run several.
  */
 const MODEL_SLOTS = [
   "ANTHROPIC_MODEL",
@@ -68,6 +63,62 @@ const MODEL_SLOTS = [
   "CLAUDE_CODE_SUBAGENT_MODEL",
 ] as const;
 
+/**
+ * Which model each `/model` tier selects.
+ *
+ * Claude Code's picker is built from ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL - the
+ * three rows are those variables, labelled from the matching *_MODEL_NAME. There are
+ * exactly three because Claude Code defines three; it is not a limit on the catalog,
+ * which can hold as many models as you like. Anything outside the three is still
+ * reachable by naming it in ANTHROPIC_MODEL.
+ *
+ * Pointing all three at one model - which this used to do - makes the picker show the
+ * same name three times and makes the tier system meaningless. Mapping them to
+ * different models is what makes `/model` a real choice, and a swap the correct price
+ * for making it deliberately.
+ *
+ * Measured before changing this: with the tiers on three different local models, an
+ * ordinary edit task produced 1 spawn and 0 swaps - Claude Code did not reach for a
+ * tier on its own. Set TIER_* to override, or point them all at one id to go back to
+ * the old behaviour.
+ */
+function pickTiers(
+  candidates: readonly ResolvedModel[],
+  fallback: string,
+): { opus: string; sonnet: string; haiku: string } {
+  const usable = candidates.filter((m) => m.available && m.capabilities.includes("tools"));
+  if (usable.length === 0) return { opus: fallback, sonnet: fallback, haiku: fallback };
+
+  // Biggest is the most capable, smallest is the fastest - which is what the Opus and
+  // Haiku names mean to anyone who has used the hosted models.
+  const sorted = [...usable].sort((a, b) => b.size_gb - a.size_gb);
+
+  // One entry per set of WEIGHTS, not per catalog entry. The catalog ships the 9B twice
+  // - once plain, once with the vision projector - and they are the same download. With
+  // both in the running, "balanced" picked the second 9B and the picker offered the
+  // same model under two names while the 4B, the genuinely mid-sized option, went
+  // unoffered. Ties keep the first, which is the larger-window variant.
+  const seen = new Set<string>();
+  const bySize = sorted.filter((m) => {
+    const weights = m.hf ?? m.path ?? m.id;
+    if (seen.has(weights)) return false;
+    seen.add(weights);
+    return true;
+  });
+  const opus = bySize[0]!;
+  const haiku = bySize[bySize.length - 1]!;
+  // Prefer a genuine middle entry; with only two distinct models Sonnet doubles the
+  // larger one rather than inventing a third.
+  const sonnet = bySize.length >= 3 ? bySize[Math.floor((bySize.length - 1) / 2)]! : opus;
+  return { opus: opus.id, sonnet: sonnet.id, haiku: haiku.id };
+}
+
+/** A short, honest description for the picker row. */
+function tierNote(m: ResolvedModel | undefined, role: string): string {
+  if (!m) return role;
+  return role + " - " + m.size_gb + " GB, " + Math.round(m.context / 1024) + "K context";
+}
+
 export function buildClientEnv(
   registry: Registry,
   cfg: Config,
@@ -76,14 +127,42 @@ export function buildClientEnv(
   const { model } = registry.resolve(requestedId ?? undefined);
   const output = Math.max(MIN_OUTPUT, Math.floor(model.context * OUTPUT_SHARE));
 
+  const all = registry.list();
+  const tiers = {
+    opus: cfg.tierOpus ?? pickTiers(all, model.id).opus,
+    sonnet: cfg.tierSonnet ?? pickTiers(all, model.id).sonnet,
+    haiku: cfg.tierHaiku ?? pickTiers(all, model.id).haiku,
+  };
+  const byId = (id: string): ResolvedModel | undefined => all.find((m) => m.id === id);
+
   const env: Record<string, string> = {
     ANTHROPIC_BASE_URL: "http://localhost:" + cfg.port,
     // The real secret when one is configured, so the emitted block actually works.
     // Claude Code sends this as `Authorization: Bearer`; with auth off, any non-empty
     // placeholder is fine and the gateway ignores it.
     ANTHROPIC_AUTH_TOKEN: cfg.gatewayApiKey ?? "local-gateway",
-    // Every model slot, same id. The repetition is load-bearing; see MODEL_SLOTS.
-    ...Object.fromEntries(MODEL_SLOTS.map((k) => [k, model.id] as const)),
+
+    // The model a request goes to when no tier is chosen.
+    ANTHROPIC_MODEL: model.id,
+    // The three /model rows. Distinct on purpose - see pickTiers.
+    ANTHROPIC_DEFAULT_OPUS_MODEL: tiers.opus,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: tiers.sonnet,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: tiers.haiku,
+    // Labels, so the picker reads as three real choices rather than three ids.
+    ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: tiers.opus,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: tiers.sonnet,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: tiers.haiku,
+    ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION: tierNote(byId(tiers.opus), "best quality"),
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: tierNote(byId(tiers.sonnet), "balanced"),
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: tierNote(byId(tiers.haiku), "fastest"),
+
+    // Subagents follow the primary deliberately. A subagent is spawned by the agent
+    // rather than chosen by the user, so letting it name a second model would swap the
+    // backend mid-task - the one case where a swap is nobody's decision. (Subagents can
+    // be switched off entirely: they need the `Task` tool, which no TOOL_PROFILE
+    // includes, so setting any profile disables them.)
+    CLAUDE_CODE_SUBAGENT_MODEL: model.id,
+
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.context),
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(output),
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",

@@ -50,6 +50,7 @@ function cfg(cacheDir: string): Config {
     backgroundStrategy: "reuse-primary", backendApiKey: "k",
     requireAuth: false, gatewayApiKey: null, memoryBudgetGb: null, allowCpu: false,
     reasoningBudget: null, effortFollowsClient: true, effortStreak: 3,
+    tierOpus: null, tierSonnet: null, tierHaiku: null,
     toolProfile: null, captureDir: null, logLevel: "error",
   };
 }

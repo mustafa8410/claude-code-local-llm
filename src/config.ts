@@ -85,6 +85,21 @@ export interface Config {
    * an alternating client ever shows up for real.
    */
   effortStreak: number;
+  /**
+   * Which model each `/model` tier selects, overriding the automatic pick.
+   *
+   * Claude Code's picker has exactly three rows - Opus, Sonnet, Haiku - and they are
+   * these three variables. That is a property of Claude Code, NOT a limit on the
+   * catalog: any number of models can be served, and anything outside the three is
+   * still reachable by naming it in ANTHROPIC_MODEL. These only decide which three get
+   * a one-keystroke shortcut.
+   *
+   * Unset, the gateway picks by size from the models that fit this host: largest to
+   * Opus, smallest to Haiku, middle to Sonnet.
+   */
+  tierOpus: string | null;
+  tierSonnet: string | null;
+  tierHaiku: string | null;
   toolProfile: string | null;
   captureDir: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -165,6 +180,9 @@ export function loadConfig(): Config {
         : envInt("REASONING_BUDGET", 0),
     effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", true),
     effortStreak: Math.max(1, envInt("EFFORT_STREAK", 1)),
+    tierOpus: process.env.TIER_OPUS?.trim() || null,
+    tierSonnet: process.env.TIER_SONNET?.trim() || null,
+    tierHaiku: process.env.TIER_HAIKU?.trim() || null,
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,
     logLevel: envEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),

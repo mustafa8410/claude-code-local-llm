@@ -1,14 +1,22 @@
 /**
  * client-env contract tests.
  *
- * The pinning invariant is the whole point of this file. Every variable through which
- * Claude Code can name a model must carry the SAME id, because we hold exactly one
- * model in VRAM. Naming a second model in any of them turns that slot into an
- * explicitly-requested id, which chooseTarget honours verbatim - so a side task evicts
- * the main model and the next turn evicts it back, at 10-90s per swap.
+ * These variables are how Claude Code names a model, and they split by ROLE.
  *
- * The assertion is written as a PROPERTY over every *_MODEL key rather than a list of
- * known names, so a variable added later without thinking about this still fails.
+ * Every slot used to carry the same id, because one model is resident and a second id
+ * anywhere costs a 10-90s swap. That was true and still wrong: it made `/model` show
+ * one name three times, and made the entire swap path unreachable.
+ *
+ * The rule now:
+ *
+ *   TIER slots (opus/sonnet/haiku)  MAY differ - they are the three rows of the
+ *                                   picker, and choosing one is a deliberate act for
+ *                                   which a swap is the fair price
+ *   SUBAGENT slot                   MUST follow the primary - a subagent is spawned by
+ *                                   the agent, so a swap there is nobody's decision
+ *
+ * There are exactly three tiers because Claude Code defines three. It is not a limit
+ * on the catalog; anything outside them is reachable through ANTHROPIC_MODEL.
  */
 
 import { test } from "node:test";
@@ -44,6 +52,7 @@ const CFG: Config = {
   gatewayApiKey: null,
   memoryBudgetGb: null,
   allowCpu: false,
+  tierOpus: null, tierSonnet: null, tierHaiku: null,
   toolProfile: null,
   captureDir: null,
   logLevel: "info",
@@ -73,33 +82,55 @@ async function registry(body = CATALOG): Promise<Registry> {
   return Registry.load(file, HOST);
 }
 
-test("every model slot is pinned to the one loaded model", async () => {
+test("the subagent slot follows the primary, whatever the tiers do", async () => {
+  // The invariant that survived. Tiers are a user's deliberate choice and a swap is
+  // the fair price; a subagent is spawned by the agent, so a second id there would
+  // swap the backend mid-task on nobody's decision. That one must stay pinned.
   const reg = await registry();
-  const { model, env } = buildClientEnv(reg, CFG, null);
 
-  const modelKeys = Object.keys(env).filter((k) => k.endsWith("MODEL"));
-  assert.ok(
-    modelKeys.length >= 5,
-    `expected the tier + subagent slots to be emitted, got ${JSON.stringify(modelKeys)}`,
-  );
-  for (const key of modelKeys) {
-    assert.equal(
-      env[key],
-      model,
-      `${key} must name the loaded model - a second id here makes Claude Code ` +
-        `request a swap on every side task`,
-    );
+  for (const requested of [null, "local-claude-small"]) {
+    const { model, env } = buildClientEnv(reg, CFG, requested);
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, model, `subagent must follow ${model}`);
+    assert.equal(env.ANTHROPIC_MODEL, model, "and the main slot IS the primary");
   }
 });
 
-test("pinning follows the requested model, not just the default", async () => {
+test("the /model tiers name different models, or the picker is pointless", async () => {
+  // These three variables ARE the three rows of Claude Code's picker. Pointing them
+  // at one id showed the same name three times and made every swap unreachable.
   const reg = await registry();
-  const { model, env } = buildClientEnv(reg, CFG, "local-claude-small");
+  const { env } = buildClientEnv(reg, CFG, null);
 
-  assert.equal(model, "local-claude-small", "an explicit request must be honoured");
-  for (const key of Object.keys(env).filter((k) => k.endsWith("MODEL"))) {
-    assert.equal(env[key], "local-claude-small", key);
-  }
+  const tiers = [
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL,
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+  ];
+  for (const t of tiers) assert.ok(t, "every tier must be set");
+  assert.ok(
+    new Set(tiers).size > 1,
+    `a catalog with several models must not collapse to one tier: ${JSON.stringify(tiers)}`,
+  );
+
+  // Biggest to Opus, smallest to Haiku - what those names mean to anyone who has used
+  // the hosted models.
+  const sizeOf = (id: string): number => reg.list().find((m) => m.id === id)!.size_gb;
+  assert.ok(
+    sizeOf(env.ANTHROPIC_DEFAULT_OPUS_MODEL!) >= sizeOf(env.ANTHROPIC_DEFAULT_HAIKU_MODEL!),
+    "Opus must not be smaller than Haiku",
+  );
+
+  // And each row is labelled, so the picker reads as a choice rather than three ids.
+  assert.ok(env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION?.includes("GB"));
+  assert.ok(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION?.includes("context"));
+});
+
+test("TIER_* overrides the automatic pick", async () => {
+  const reg = await registry();
+  const pinned = { ...CFG, tierOpus: "local-claude-small", tierHaiku: "local-claude-small" };
+  const { env } = buildClientEnv(reg, pinned, null);
+  assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, "local-claude-small");
+  assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "local-claude-small");
 });
 
 test("context and output budgets come from the model, and output leaves prompt room", async () => {
