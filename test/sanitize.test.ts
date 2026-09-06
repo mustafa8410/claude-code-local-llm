@@ -5,6 +5,14 @@
  * running against this gateway, not hand-written approximations. That matters: the
  * body Claude Code sends grows with each release, and every bug these tests cover
  * was found by looking at captured traffic rather than by reading the spec.
+ *
+ * THEY ARE SCRUBBED, AND ANY YOU ADD MUST BE TOO. A captured body carries
+ * `metadata.user_id`, which contains a `device_id` - a stable fingerprint of the
+ * machine that made the request - plus a session id and absolute paths containing the
+ * operating-system username. None of that is a credential, and none of it belongs in a
+ * public repository either. The committed copies have the device id zeroed, the session
+ * id replaced with a nil UUID, and the username replaced with `dev`. Shape is preserved
+ * exactly, because shape is the entire point of these files.
  */
 
 import { test } from "node:test";
