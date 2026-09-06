@@ -72,15 +72,33 @@ const MODEL_SLOTS = [
  * which can hold as many models as you like. Anything outside the three is still
  * reachable by naming it in ANTHROPIC_MODEL.
  *
- * Pointing all three at one model - which this used to do - makes the picker show the
- * same name three times and makes the tier system meaningless. Mapping them to
- * different models is what makes `/model` a real choice, and a swap the correct price
- * for making it deliberately.
+ * OFF BY DEFAULT, and the reason is the whole story of this function.
  *
- * Measured before changing this: with the tiers on three different local models, an
- * ordinary edit task produced 1 spawn and 0 swaps - Claude Code did not reach for a
- * tier on its own. Set TIER_* to override, or point them all at one id to go back to
- * the old behaviour.
+ * Giving each tier a different model looks obviously right: the picker becomes three
+ * real choices instead of one name three times, and a swap is a fair price for a
+ * deliberate switch. It was measured first, too - three tiers on three models, an
+ * ordinary edit task, 1 spawn and 0 swaps. Claude Code appeared not to touch a tier
+ * unless asked.
+ *
+ * That measurement used `--print`, which has no compaction and no background work, and
+ * it was wrong about the thing that mattered. An interactive session alternates:
+ *
+ *   ready 2b -> stopping 2b (17 ms later) -> load 9b -> ready -> stopping -> load 2b
+ *   ... interleaved with `backend unreachable: fetch failed`
+ *
+ * Claude Code runs side tasks - titling, and the summarising half of compaction - on
+ * the small/fast tier on purpose. Against a hosted provider that is free, because every
+ * model is already resident. Against one GPU it is a full load each way, so the session
+ * spends its time swapping and requests fail outright mid-flight.
+ *
+ * That alternation is almost certainly also the answer to an older mystery: a soak once
+ * logged 36 effort changes and 35 reloads that were blamed on effort handling and never
+ * reproduced. With every slot pinned to one id the same alternation could not swap
+ * models, so it surfaced as budget churn instead. One cause, two symptoms.
+ *
+ * So the tiers follow the primary, and the picker gets its choices from gateway model
+ * discovery instead - which lists the entire catalog, not three of it. TIER_MODE=distinct
+ * turns this on for anyone who wants it, and TIER_* pins individual slots either way.
  */
 function pickTiers(
   candidates: readonly ResolvedModel[],
@@ -128,10 +146,16 @@ export function buildClientEnv(
   const output = Math.max(MIN_OUTPUT, Math.floor(model.context * OUTPUT_SHARE));
 
   const all = registry.list();
+
+  // Tiers follow the primary by default. TIER_MODE=distinct opts into one model per
+  // tier; TIER_OPUS/SONNET/HAIKU override either way. See the block above pickTiers.
+  const auto = cfg.tierMode === "distinct"
+    ? pickTiers(all, model.id)
+    : { opus: model.id, sonnet: model.id, haiku: model.id };
   const tiers = {
-    opus: cfg.tierOpus ?? pickTiers(all, model.id).opus,
-    sonnet: cfg.tierSonnet ?? pickTiers(all, model.id).sonnet,
-    haiku: cfg.tierHaiku ?? pickTiers(all, model.id).haiku,
+    opus: cfg.tierOpus ?? auto.opus,
+    sonnet: cfg.tierSonnet ?? auto.sonnet,
+    haiku: cfg.tierHaiku ?? auto.haiku,
   };
   const byId = (id: string): ResolvedModel | undefined => all.find((m) => m.id === id);
 

@@ -31,7 +31,7 @@ function cfg(over: Partial<Config> = {}): Config {
     backgroundStrategy: "reuse-primary", backendApiKey: "secret-not-in-argv",
     requireAuth: false, gatewayApiKey: null, memoryBudgetGb: null, allowCpu: true,
     reasoningBudget: null, effortFollowsClient: true, effortStreak: 3,
-    tierOpus: null, tierSonnet: null, tierHaiku: null,
+    tierMode: "follow", tierOpus: null, tierSonnet: null, tierHaiku: null,
     toolProfile: null, captureDir: null, logLevel: "error",
     ...over,
   };

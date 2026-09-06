@@ -94,12 +94,25 @@ export interface Config {
    * still reachable by naming it in ANTHROPIC_MODEL. These only decide which three get
    * a one-keystroke shortcut.
    *
-   * Unset, the gateway picks by size from the models that fit this host: largest to
-   * Opus, smallest to Haiku, middle to Sonnet.
+   * Unset, each follows the primary model - see tierMode for why that is the default.
+   * Under TIER_MODE=distinct they instead take the largest, middle and smallest model
+   * that fits this host.
    */
   tierOpus: string | null;
   tierSonnet: string | null;
   tierHaiku: string | null;
+  /**
+   * `follow` (default) points every tier at the primary model. `distinct` gives each
+   * tier its own model, picked by size.
+   *
+   * `distinct` reads better in the picker and is a trap on one GPU: Claude Code runs
+   * side tasks - titling, and compaction's summarising step - on the small tier by
+   * design, so an interactive session alternates between two models and spends itself
+   * loading them. Observed directly: a backend reaching ready and being torn down 17 ms
+   * later, over and over, with `backend unreachable` between. The picker gets its real
+   * choices from gateway model discovery instead, which offers the whole catalog.
+   */
+  tierMode: "follow" | "distinct";
   toolProfile: string | null;
   captureDir: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -180,6 +193,7 @@ export function loadConfig(): Config {
         : envInt("REASONING_BUDGET", 0),
     effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", true),
     effortStreak: Math.max(1, envInt("EFFORT_STREAK", 1)),
+    tierMode: envEnum("TIER_MODE", ["follow", "distinct"] as const, "follow"),
     tierOpus: process.env.TIER_OPUS?.trim() || null,
     tierSonnet: process.env.TIER_SONNET?.trim() || null,
     tierHaiku: process.env.TIER_HAIKU?.trim() || null,

@@ -7,16 +7,18 @@
  * anywhere costs a 10-90s swap. That was true and still wrong: it made `/model` show
  * one name three times, and made the entire swap path unreachable.
  *
- * The rule now:
+ * Giving the tiers a model each was then tried, and reverted, because Claude Code runs
+ * side tasks on the small tier by design and an interactive session alternated between
+ * two models until requests began failing. So every slot follows the primary again -
+ * but for a different reason than before, and with a different way out:
  *
- *   TIER slots (opus/sonnet/haiku)  MAY differ - they are the three rows of the
- *                                   picker, and choosing one is a deliberate act for
- *                                   which a swap is the fair price
- *   SUBAGENT slot                   MUST follow the primary - a subagent is spawned by
- *                                   the agent, so a swap there is nobody's decision
+ *   TIER slots     follow the primary. TIER_MODE=distinct opts out.
+ *   SUBAGENT slot  follows the primary, always. A subagent is spawned by the agent,
+ *                  so a swap there is nobody's decision.
+ *   the picker     gets its choices from gateway model DISCOVERY, which lists the
+ *                  whole catalog - not from these three variables.
  *
- * There are exactly three tiers because Claude Code defines three. It is not a limit
- * on the catalog; anything outside them is reachable through ANTHROPIC_MODEL.
+ * That last line is what makes the pinning acceptable now and did not exist before.
  */
 
 import { test } from "node:test";
@@ -52,7 +54,7 @@ const CFG: Config = {
   gatewayApiKey: null,
   memoryBudgetGb: null,
   allowCpu: false,
-  tierOpus: null, tierSonnet: null, tierHaiku: null,
+  tierMode: "follow", tierOpus: null, tierSonnet: null, tierHaiku: null,
   toolProfile: null,
   captureDir: null,
   logLevel: "info",
@@ -95,22 +97,34 @@ test("the subagent slot follows the primary, whatever the tiers do", async () =>
   }
 });
 
-test("the /model tiers name different models, or the picker is pointless", async () => {
-  // These three variables ARE the three rows of Claude Code's picker. Pointing them
-  // at one id showed the same name three times and made every swap unreachable.
+test("by default every tier follows the primary, because alternating them thrashes", async () => {
+  // Giving each tier its own model was tried and reverted. Claude Code runs side tasks
+  // - titling, and compaction's summarising step - on the small tier by design, so an
+  // interactive session alternated 9B/2B and spent itself loading them: a backend
+  // reaching ready and being torn down 17 ms later, over and over, with
+  // `backend unreachable: fetch failed` in between.
+  //
+  // A --print measurement said otherwise and was wrong; it has neither compaction nor
+  // background work. The picker gets its real choices from gateway model discovery,
+  // which offers the whole catalog rather than three of it.
   const reg = await registry();
-  const { env } = buildClientEnv(reg, CFG, null);
+  const { model, env } = buildClientEnv(reg, CFG, null);
 
-  const tiers = [
-    env.ANTHROPIC_DEFAULT_OPUS_MODEL,
-    env.ANTHROPIC_DEFAULT_SONNET_MODEL,
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
-  ];
-  for (const t of tiers) assert.ok(t, "every tier must be set");
-  assert.ok(
-    new Set(tiers).size > 1,
-    `a catalog with several models must not collapse to one tier: ${JSON.stringify(tiers)}`,
-  );
+  for (const key of [
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  ]) {
+    assert.equal(env[key], model, `${key} must follow the primary; a second id thrashes`);
+  }
+});
+
+test("TIER_MODE=distinct opts back into one model per tier", async () => {
+  const reg = await registry();
+  const { env } = buildClientEnv(reg, { ...CFG, tierMode: "distinct" }, null);
+
+  const tiers = [env.ANTHROPIC_DEFAULT_OPUS_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL];
+  assert.ok(new Set(tiers).size > 1, `distinct must actually differ: ${JSON.stringify(tiers)}`);
 
   // Biggest to Opus, smallest to Haiku - what those names mean to anyone who has used
   // the hosted models.
@@ -119,10 +133,7 @@ test("the /model tiers name different models, or the picker is pointless", async
     sizeOf(env.ANTHROPIC_DEFAULT_OPUS_MODEL!) >= sizeOf(env.ANTHROPIC_DEFAULT_HAIKU_MODEL!),
     "Opus must not be smaller than Haiku",
   );
-
-  // And each row is labelled, so the picker reads as a choice rather than three ids.
   assert.ok(env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION?.includes("GB"));
-  assert.ok(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION?.includes("context"));
 });
 
 test("the emitted config does not switch off model discovery", async () => {
