@@ -229,6 +229,22 @@ export function buildClientEnv(
     ...tierEnv,
 
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.context),
+
+    // MAX_CONTEXT_TOKENS is not enough on its own for a model Claude Code has never
+    // heard of, which every model here is.
+    //
+    // It resolves a window from several sources and one of them is literally labelled
+    // "default for an unrecognized model". That default wins over MAX_CONTEXT_TOKENS
+    // and is small: reported from a real session on the 64K 9B, the indicator sat at
+    // "0% until auto-compact" from the first message and compaction began at roughly a
+    // thousand tokens used. The percentage is (threshold - used) / threshold, so 0% at
+    // ~1000 used means the threshold itself was about that, not 65536.
+    //
+    // These two say the window is known. The enforcement flag stops the unrecognised
+    // model default from overriding, and AUTO_COMPACT_WINDOW states the figure the
+    // compaction trigger should count against.
+    CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1",
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(model.context),
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(output),
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
     // NOT setting CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, deliberately.

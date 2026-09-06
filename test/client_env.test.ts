@@ -203,6 +203,25 @@ test("TIER_* overrides the automatic pick", async () => {
   assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "local-claude-small");
 });
 
+test("the window is stated three ways, because an unknown model needs all of them", async () => {
+  // MAX_CONTEXT_TOKENS alone is not enough. Claude Code resolves a window from several
+  // sources, one of them labelled "default for an unrecognized model" - which every
+  // model here is - and that default beats MAX_CONTEXT_TOKENS. Observed on the 64K 9B:
+  // "0% until auto-compact" from the first message, compaction starting around a
+  // thousand tokens used. The indicator is (threshold - used) / threshold, so 0% at
+  // ~1000 used puts the threshold near 1000 rather than 65536.
+  const reg = await registry();
+  const { env } = buildClientEnv(reg, CFG, "local-claude-small");
+  const ctx = "32768";
+
+  assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, ctx);
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, ctx, "the compaction trigger needs it too");
+  assert.equal(
+    env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT, "1",
+    "without this the unrecognised-model default overrides both",
+  );
+});
+
 test("context and output budgets come from the model, and output leaves prompt room", async () => {
   const reg = await registry();
   const { env } = buildClientEnv(reg, CFG, "local-claude-big");
