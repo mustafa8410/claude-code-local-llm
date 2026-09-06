@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { buildUpstreamRequest, countRewrittenRoles } from "../src/sanitize.ts";
-import { GatewayError } from "../src/anthropic/errors.ts";
+import { GatewayError, toEnvelope } from "../src/anthropic/errors.ts";
 import type { MessagesRequest } from "../src/types.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -179,6 +179,38 @@ test("system array order is preserved so the prompt cache survives", () => {
   const out = buildUpstreamRequest(req, { backendAlias: "m", contextWindow: 8192 });
   const texts = (out.system as { text: string }[]).map((b) => b.text);
   assert.deepEqual(texts, ["first", "second"]);
+});
+
+test("errors are separated from the status code, except the one Claude Code parses", () => {
+  // Claude Code renders failures as `API Error: 400 <message>` with nothing between,
+  // so a lowercase opening word collides with the status code:
+  //   API Error: 400 model local-claude-... cannot run on this host
+  // which reads as though "400 model" were a phrase.
+  const sep = toEnvelope(GatewayError.invalidRequest("model x cannot run on this host"));
+  assert.equal(sep.body.error.message, "- model x cannot run on this host");
+
+  // Unexpected failures get the same treatment, so the format never varies.
+  assert.equal(toEnvelope(new Error("something burst")).body.error.message, "- something burst");
+
+  // THE EXEMPTION, and the reason it exists. Claude Code matches this wording three
+  // ways and one of them is `r.startsWith("prompt is too long")`, which drives its
+  // compaction path. Prefixing it would buy a tidier error and cost a session that can
+  // no longer recover from a full context.
+  const overflow = toEnvelope(
+    GatewayError.invalidRequest("prompt is too long: 40000 tokens > 32000 maximum"),
+  );
+  assert.ok(
+    overflow.body.error.message.startsWith("prompt is too long"),
+    `must stay verbatim, got: ${overflow.body.error.message}`,
+  );
+  // And the shape it reads the numbers out of survives.
+  assert.match(overflow.body.error.message, /prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/);
+
+  // Applying it twice would be its own kind of noise.
+  assert.equal(
+    toEnvelope(GatewayError.invalidRequest("- already separated")).body.error.message,
+    "- already separated",
+  );
 });
 
 test("a max_tokens the thinking budget would swallow is widened, not refused", () => {
