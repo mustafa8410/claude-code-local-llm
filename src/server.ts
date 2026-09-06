@@ -371,7 +371,22 @@ async function main(): Promise<void> {
   // is a missing --gpus all rather than a deliberate choice. Failing names the fix.
   if (resources.vramTotalMb === null && !cfg.allowCpu) {
     log.error("no GPU detected - refusing to start", {
-      docker: "pass --gpus all (and install the NVIDIA Container Toolkit on Linux)",
+      // Listed first because it is the likeliest cause and the least obvious one.
+      // GPU access is fixed when a container is CREATED, so a container made without
+      // it can never gain it - pressing Start again reproduces this error forever.
+      // Docker Desktop's Run button does not pass --gpus all and offers no field for
+      // it, so "pass --gpus all" is unactionable advice to anyone working in the UI.
+      docker_desktop:
+        "the Run button does NOT give a container GPU access, and it cannot be added " +
+        "afterwards - restarting this container will fail the same way. Either use " +
+        "`docker compose up -d`, or make the GPU the default for every container: " +
+        'Settings > Docker Engine > add "default-runtime": "nvidia", Apply & restart. ' +
+        "This image already sets NVIDIA_VISIBLE_DEVICES=all, so the runtime is the " +
+        "only missing piece, and the Run button then works",
+      docker_cli:
+        "docker run --gpus all ... (or --runtime=nvidia; either is required at " +
+        "CREATION time, neither can be added to an existing container)",
+      linux: "install the NVIDIA Container Toolkit",
       driver: "check nvidia-smi on the host; the CUDA image must match its driver",
       laptop: "a discrete GPU switched off for power saving reports no devices",
       override:

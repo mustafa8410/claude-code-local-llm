@@ -575,10 +575,53 @@ or Docker Desktop with WSL2 GPU support on Windows.
 
 ```bash
 docker build -t claude-code-local-llm .
-docker run --gpus all -p 8787:8787 -v llm-models:/models claude-code-local-llm
 ```
 
-Or `docker compose up -d`.
+### Every way to run it
+
+A container gets GPU access **only at creation time**. Nothing you do to an existing
+container can add it — `docker start` on a container built without it reproduces the
+failure forever. Pick one of these:
+
+| | Command | GPU |
+|---|---|---|
+| **Compose** *(recommended)* | `docker compose up -d` | ✓ reserved in `docker-compose.yml` |
+| CLI, explicit | `docker run --gpus all -p 8787:8787 -v llm-models:/models claude-code-local-llm` | ✓ |
+| CLI, via runtime | `docker run --runtime=nvidia -p 8787:8787 -v llm-models:/models claude-code-local-llm` | ✓ |
+| **Docker Desktop UI** | the Run button | ✗ **unless you do the one-time setup below** |
+| CPU only | add `-e ALLOW_CPU=1` to any of the above | n/a — [and barely usable](#cpu-is-not-a-slower-tier--past-a-point-it-cannot-finish-a-request) |
+
+### Making the Docker Desktop Run button work
+
+The Run button passes no GPU flag and offers no field for one, so by default the gateway
+finds no GPU and refuses to start. One host setting fixes it for **every** container,
+permanently — this image already sets `NVIDIA_VISIBLE_DEVICES=all` (inherited from the
+CUDA base), so the runtime is the only missing piece:
+
+**Settings → Docker Engine**, add `"default-runtime": "nvidia"`, then **Apply & restart**:
+
+```json
+{
+  "default-runtime": "nvidia",
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "runtimeArgs": []
+    }
+  }
+}
+```
+
+Verified here: with `--runtime=nvidia` and **no** `--gpus` flag, the gateway reports
+`vramTotalMb=8191` while `HostConfig.DeviceRequests` is `null` — the runtime alone
+grants the GPU. Making it the default extends that to containers the UI creates.
+
+To check whether a container you already have has GPU access:
+
+```bash
+docker inspect <name> --format '{{json .HostConfig.DeviceRequests}}'  # null = no GPU
+docker inspect <name> --format '{{.HostConfig.Runtime}}'              # nvidia = has it
+```
 
 <details>
 <summary>Why there is no separate <code>:cpu</code> image to pull</summary>
