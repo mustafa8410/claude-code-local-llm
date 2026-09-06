@@ -80,3 +80,9 @@ services:
 
 volumes:
   llm-models:
+    # Pinned to a bare name on purpose. Compose otherwise prefixes volumes with the
+    # project directory - `myfolder_llm-models` - which is a DIFFERENT volume from the
+    # `llm-models` that `docker run -v llm-models:/models` uses. The README offers both
+    # as equivalent ways to start the gateway, so without this, switching between them
+    # silently re-downloads several GB of weights into a second copy.
+    name: llm-models
