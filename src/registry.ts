@@ -262,7 +262,11 @@ export class Registry {
       seen.add(e.id.toLowerCase());
 
       const budget = resolveBudget(e, where, envDefaultBudget, problems);
-      const fit = checkFit(e.size_gb ?? 0, e.tier ?? "vram", res);
+      const fit = checkFit(e.size_gb ?? 0, e.tier ?? "vram", res, {
+        contextTokens: e.context,
+        capabilities: e.capabilities,
+        args: e.args,
+      });
       resolved.push({
         ...e,
         alias: e.id,
@@ -369,7 +373,11 @@ export class Registry {
       );
     }
 
-    const fit = checkFit(entry.size_gb, entry.tier, res);
+    const fit = checkFit(entry.size_gb, entry.tier, res, {
+      contextTokens: entry.context,
+      capabilities: entry.capabilities,
+      args: entry.args,
+    });
     const resolved: ResolvedModel = {
       ...entry,
       alias: entry.id,

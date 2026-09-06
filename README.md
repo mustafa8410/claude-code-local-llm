@@ -164,12 +164,11 @@ so the knob stays and the default does not.
 ### Tool schemas are the real context cost
 
 In a measured request, tool definitions were **81%** of the payload (~23,400 of
-~28,800 tokens); the system prompt was only 6%.
+~28,800 tokens); the system prompt was only 6%. Claude Code 2.1.236 sends ~27,800 tokens
+before the conversation starts.
 
-**On a 16K model this is not an optimisation, it is a prerequisite.** Claude Code
-2.1.236 with its default tool set was measured sending ~27,800 tokens before the
-conversation starts, against a 15,872-token usable window — so an unpruned session fails
-on its very first message, whatever you ask it:
+That number used to decide whether the project worked at all. Against the old 16K default
+an unpruned session failed on its **first** message:
 
 ```
 Prompt is too long · the request is ~27828 tokens (limit 15872) but this
@@ -177,21 +176,36 @@ conversation is only ~1519 tokens — the rest is system prompt, tool
 definitions, and attachment content.
 ```
 
-Prune client-side with `claude --tools "Read,Edit,Grep,Glob,Bash"` (measured at a 73%
-reduction), or gateway-side with `TOOL_PROFILE` when the launch command cannot change.
+**The default model now has a 64K window, so pruning is optional again.** Verified with
+no `TOOL_PROFILE` and no `--tools`: plan mode, write a file, and read-then-edit all
+succeed. Prune when you want the speed — a smaller prefix is less to prefill every turn —
+not because you have to.
+
+Two ways, and they take the same tool names:
+
+```bash
+claude --tools "Read,Edit,Grep,Glob,Bash"          # client-side, 73% reduction
+TOOL_PROFILE="Read,Edit,Grep,Glob,Bash"            # gateway-side, identical set
+TOOL_PROFILE=coding                                # or a named shorthand
+```
+
+`TOOL_PROFILE` takes **any** comma-separated list, case-insensitively, including MCP
+tools (`mcp__server__tool`) — the named profiles are just shorthands over the same
+mechanism:
+
+| Profile | Tools |
+|---|---|
+| `analysis` | read, glob, grep, bash, powershell, todowrite |
+| `coding` | those plus write, edit, notebookedit |
+| `full` | no pruning (the default) |
+
+A single bare word is read as a **profile name**, never as a one-tool list — `Read` alone
+is far more likely a mistyped profile than a genuine wish for exactly one tool, and
+reading it as a list would prune everything else away. Write `Read,` for a list of one.
+An unrecognised value warns at startup and falls back to no pruning; it used to be a
+silent no-op that surfaced later as `prompt is too long`, pointing nowhere near the typo.
+
 Pruning is deterministic and order-preserving, so it cannot defeat the prompt cache.
-
-Which profile you need depends on the mode, because plan mode adds system prompt of its
-own. Measured against the 9B at 16K:
-
-| `TOOL_PROFILE` | `--permission-mode acceptEdits` | `--permission-mode plan` |
-|---|---|---|
-| unset (`full`) | ✗ prompt too long | ✗ prompt too long |
-| `coding` | ✓ | ✗ prompt too long |
-| `analysis` | ✓ (read-only) | ✓ |
-
-A larger window is the other lever — a 32K model swallows the full tool set — but on 8 GB
-of VRAM the 16K models are the ones worth running.
 
 Also set `CLAUDE_CODE_ATTRIBUTION_HEADER=0`: a varying prompt prefix makes llama.cpp
 log `forcing full prompt re-processing due to lack of cache data` on every turn.
@@ -230,7 +244,8 @@ rather than put in the picker.
 
 | Tier | Model | Size | Context | Notes |
 |---|---|---|---|---|
-| `vram` | **Qwen3.5-9B** (default) | 5.56 GB | 16K | 327 tok/s prefill, 56–60 decode |
+| `vram` | **Qwen3.5-9B** (default) | 5.56 GB | **64K** | 327 tok/s prefill, 56–60 decode |
+| `vram` | Qwen3.5-9B + vision | 5.56 GB | 16K | same weights + mmproj; only if you send images |
 | `vram` | Qwen3.5-4B | 2.71 GB | 32K | good background-model choice |
 | `vram` | Qwen3.5-2B | 1.25 GB | 32K | too small for long agent loops |
 | `stretch` | Qwen3.6-35B-A3B | 15.69 GB | 16K | 73.4% SWE-bench; best quality reachable on 8 GB |
@@ -240,11 +255,43 @@ rather than put in the picker.
 default Docker Desktop / WSL2 VM is given. The gateway probes real VRAM and RAM at
 startup and marks anything that cannot fit unavailable, **naming the shortfall in GB**.
 
-### Downloading a model the image never shipped
+### Importing your own model, step by step
 
 That catalog was chosen for one 8 GB laptop, which is no basis for deciding what your
-hardware may run. `POST /admin/models` adds an entry at runtime — no rebuild, no
-bind-mounted YAML:
+hardware may run. Adding your own takes four fields and one command. **Nothing is
+rebuilt and no file is bind-mounted.**
+
+**1. Find a GGUF repo on Hugging Face.** You need `org/repo:QUANT`. Browse
+<https://huggingface.co/models?library=gguf>, or start from a known publisher such as
+[unsloth](https://huggingface.co/unsloth) or
+[bartowski](https://huggingface.co/bartowski). The quant is the suffix on the `.gguf`
+filename — `Q4_K_M`, `UD-Q4_K_XL`, `Q5_K_M`. `Q4_K_M` is the usual quality/size
+compromise. So `unsloth/Qwen3-0.6B-GGUF` + `Q4_K_M` → `unsloth/Qwen3-0.6B-GGUF:Q4_K_M`.
+
+**2. Get the four numbers you have to supply.**
+
+| Field | Where it comes from |
+|---|---|
+| `size_gb` | the file size on the repo's *Files* tab, in GB |
+| `context` | see below — this is the one people get wrong |
+| `capabilities` | `tools` is required for Claude Code; add `thinking` for a reasoning model, `vision` only if you send images |
+| `id` | must contain `claude` and must not start with `claude-`; the gateway rejects anything else |
+
+**Choosing `context`.** It is *your* choice, not a property of the model — it becomes
+`-c` on the llama-server command line, and it costs VRAM. The model card gives the
+trained maximum (often 128K or more); what you can afford is usually far less. Budget it:
+
+```
+VRAM needed ≈ size_gb + (context ÷ 1024 × 22 MiB) + 400 MiB   [+ 1130 MiB if vision]
+```
+
+The 22 MiB per 1K tokens is measured on Qwen3.5 with `--cache-type-k/v q8_0`, and it is
+**twice that** if you omit those args, because an unquantised KV cache is about double.
+Start with 32768; the gateway marks the entry unavailable and names the shortfall in GB
+if it will not fit, so guessing high is safe — it fails at *add* time, not at load time.
+
+**3. Add it.** `POST /admin/models` validates the id, checks the Hugging Face repo
+actually exists, and sizes it against your hardware:
 
 ```bash
 curl -X POST localhost:8787/admin/models -H 'content-type: application/json' -d '{
@@ -257,16 +304,50 @@ curl -X POST localhost:8787/admin/models -H 'content-type: application/json' -d 
   "tier": "vram"
 }'
 
-# weights are fetched on first use; pull now to get it over with. Streams progress,
-# so a multi-GB download is not a silent wait.
-curl -N -X POST 'localhost:8787/admin/models/pull?model=local-claude-qwen3-06b'
+```
 
-curl -X DELETE 'localhost:8787/admin/models?model=local-claude-qwen3-06b'
+A `201` reports whether it fits, and names the shortfall if not:
+
+```json
+{"id":"local-claude-qwen3-06b","available":true,"unavailable_reason":null,
+ "reasoning_budget":4096,
+ "weights":"not downloaded yet - POST /admin/models/pull?model=local-claude-qwen3-06b"}
+```
+
+**4. Download the weights.** Optional — they are fetched on first use anyway — but doing
+it now streams progress rather than making your first real request look hung:
+
+```bash
+curl -N -X POST 'localhost:8787/admin/models/pull?model=local-claude-qwen3-06b'
+# pulling local-claude-qwen3-06b
+# downloading / loading model ...
+# ok: local-claude-qwen3-06b ready in 34145ms
+# released; the weights stay in the cache for the next request
+```
+
+The pull *loads* the model as well as fetching it, which is the only way to prove the
+weights are usable rather than merely present. It releases the backend afterwards.
+
+**5. Use it.** It appears in `/model` immediately, no restart:
+
+```bash
+curl -s 'localhost:8787/admin/client-env?format=sh&model=local-claude-qwen3-06b' \
+  | grep ^export        # eval this to point Claude Code at it
+curl -X DELETE 'localhost:8787/admin/models?model=local-claude-qwen3-06b'   # or forget it
 ```
 
 The entry is written to `custom-models.yaml` **in the model volume**, beside the weights
 it describes, so it survives `docker rm` exactly as long as the download does. Deleting
 an entry leaves the weights in the cache.
+
+Using a GGUF you already have on disk? Mount it and pass `path` instead of `hf`:
+
+```bash
+docker run ... -v /my/models:/models/mine claude-local-llm
+curl -X POST localhost:8787/admin/models -H 'content-type: application/json' \
+  -d '{"id":"local-claude-mine","path":"/models/mine/model.gguf","size_gb":4,
+       "context":32768,"capabilities":["tools"],"tier":"vram"}'
+```
 
 Three things this deliberately checks:
 
@@ -357,7 +438,7 @@ but Claude Code's agent loop will not work:
 | `MODELS_CONFIG` | `./config/models.yaml` | catalog path |
 | `IDLE_TTL_SECONDS` | `900` | unload after idle; `0` disables |
 | `BACKGROUND_STRATEGY` | `reuse-primary` | how an unrecognised model id is handled |
-| `TOOL_PROFILE` | unset | `full` \| `coding` \| `analysis` \| comma-separated list |
+| `TOOL_PROFILE` | unset (`full`) | `coding` \| `analysis` \| any comma-separated tool list; unknown values warn and fall back |
 | `GATEWAY_API_KEY` | unset | secret clients must send; setting it enables auth |
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
 | `EFFORT_FOLLOWS_CLIENT` | `1` | let Claude Code's `effort` pick the thinking budget |
@@ -418,12 +499,21 @@ request (20833 tokens) exceeds the available context size (16384 tokens)
 Prompt is too long · automatic compaction failed
 ```
 
-That is a property of a small window, not a gateway bug. The gateway's job is to make it
-legible: `sanitize.ts` rejects an over-long prompt up front with the `prompt is too long`
-wording Claude Code's recovery keys on, and when its fast byte-based estimate lets one
-through — dense content such as base64 or minified assets tokenises worse than the
-estimate assumes — the upstream `exceed_context_size_error` is translated into the same
-wording rather than surfacing as a generic server fault.
+That is a property of a small window, not a gateway bug — but **"small" is a setting, not
+a fact about the model**. `context:` in `config/models.yaml` becomes `-c` on the
+llama-server command line, and it is yours to choose. This README used to present 16K as
+a constraint to work around; it was a number nobody had re-examined. Raising the default
+9B to 64K cost *less* VRAM than it had been using, because dropping the vision projector
+paid for the extra KV cache. If you are hitting this section, widen the window before you
+work around it — see [Importing your own model](#importing-your-own-model-step-by-step)
+for the VRAM arithmetic.
+
+Where the window genuinely is the limit, the gateway's job is to make it legible:
+`sanitize.ts` rejects an over-long prompt up front with the `prompt is too long` wording
+Claude Code's recovery keys on, and when its fast byte-based estimate lets one through —
+dense content such as base64 or minified assets tokenises worse than the estimate
+assumes — the upstream `exceed_context_size_error` is translated into the same wording
+rather than surfacing as a generic server fault.
 
 Practically: prefer a model with a larger window for long sessions, and start a fresh
 session rather than fighting one that has already overflowed.

@@ -54,12 +54,42 @@ models:
     display_name: "Qwen3.5 9B (UD-Q4_K_XL)"
     hf: unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL
     size_gb: 5.56
-    context: 16384
-    capabilities: [tools, thinking, vision]
+    context: 65536
+    capabilities: [tools, thinking]
     tier: vram
     default: true
     # Verified on an RTX 3070 Ti Laptop (8 GB): 327 tok/s prefill, 56-60 tok/s decode,
-    # fully offloaded. Context is held at 16K so weights + KV fit beside the desktop.
+    # fully offloaded.
+    #
+    # 64K, and no vision, both measured on that card:
+    #
+    #   vision + 16K   6908 MiB   <- what this entry used to be
+    #   no vision 16K  5778 MiB
+    #   no vision 64K  6834 MiB   <- less VRAM than before, four times the window
+    #
+    # The `vision` capability makes llama-server load an 879 MiB mmproj projector that
+    # cost 1130 MiB resident, for a modality Claude Code does not exercise in normal
+    # use. Trading it for KV cache is close to free: KV runs ~22 MiB per 1K tokens at
+    # q8_0, so the projector alone paid for roughly 48K of extra window.
+    #
+    # 16K was not merely tight, it did not work. Claude Code 2.1.236 sends ~27,800
+    # tokens of system prompt and tool schemas before the conversation starts, so an
+    # unpruned session failed on its FIRST message. At 64K it succeeds with nothing
+    # pruned, in both acceptEdits and plan mode. See local-claude-qwen3.5-9b-vision
+    # below if you need images and can live with the smaller window.
+    args: ["-ngl", "999", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
+
+  - id: local-claude-qwen3.5-9b-vision
+    display_name: "Qwen3.5 9B (UD-Q4_K_XL) + vision"
+    hf: unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL
+    size_gb: 5.56
+    context: 16384
+    capabilities: [tools, thinking, vision]
+    tier: vram
+    # Same weights as the entry above - no extra download - plus the mmproj projector,
+    # which costs 1130 MiB and therefore most of the context window. Pick this one only
+    # if you actually send images; at 16K, Claude Code's default tool set does not fit,
+    # so this needs TOOL_PROFILE or `claude --tools "..."` to be usable at all.
     args: ["-ngl", "999", "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--parallel", "1"]
 
   - id: local-claude-qwen3.5-4b

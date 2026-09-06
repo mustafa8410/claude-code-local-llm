@@ -66,3 +66,28 @@ function resolveAllowList(profile: string): Set<string> | null {
   }
   return null;
 }
+
+/**
+ * Is this a value pruneTools can act on?
+ *
+ * Worth having separately because an unrecognised value used to be a SILENT no-op:
+ * `TOOL_PROFILE=codng` resolved to null, pruneTools returned the tools untouched, and
+ * nothing said so. On a window too small for the full tool set that surfaces much
+ * later as `prompt is too long`, which points nowhere near the typo. Callers use this
+ * to complain at startup and fall back, rather than quietly doing nothing.
+ *
+ * Note that a bare single word is NOT accepted as a one-tool list. `TOOL_PROFILE=Read`
+ * is far more likely to be a mistyped profile name than a genuine wish for exactly one
+ * tool, and reading it as a list would prune everything else away - a worse failure
+ * than refusing it. Write `Read,Grep` for a list, or `Read,` for a list of one.
+ */
+export function isKnownProfile(profile: string): boolean {
+  const p = profile.trim();
+  if (p === "" || p.toLowerCase() === "full") return true;
+  return resolveAllowList(p) !== null;
+}
+
+/** The named profiles and their members, for error messages and docs. */
+export function describeProfiles(): Record<string, readonly string[]> {
+  return { ...PROFILES };
+}

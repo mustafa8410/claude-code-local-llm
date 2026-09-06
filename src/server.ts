@@ -20,7 +20,7 @@ import { handleMessages, readJsonBody } from "./anthropic/messages.ts";
 import { handleCountTokens } from "./anthropic/count_tokens.ts";
 import { handleModels } from "./anthropic/models.ts";
 import { handleClientEnv } from "./anthropic/client_env.ts";
-import { availableProfiles } from "./tools/prune.ts";
+import { availableProfiles, isKnownProfile, describeProfiles } from "./tools/prune.ts";
 import type { ModelEntry } from "./types.ts";
 
 function pathOf(req: IncomingMessage): string {
@@ -393,6 +393,30 @@ async function main(): Promise<void> {
         "use the smallest model in the catalog, keep the tool set small, and expect " +
         "this to be useful for trying the gateway out rather than for real sessions",
     });
+  }
+
+  // Validate TOOL_PROFILE here, not on the first request.
+  //
+  // An unrecognised value used to be a silent no-op: pruning simply did not happen, and
+  // nothing said so. The consequence arrives much later and points somewhere else - on
+  // a window too small for the full tool set, Claude Code reports `prompt is too long`,
+  // which reads as a model problem rather than a typo in an environment variable.
+  //
+  // Falling back rather than exiting: a typo should not stop a container that can still
+  // serve, and `full` is the same behaviour the unrecognised value already had - only
+  // now it is announced.
+  if (cfg.toolProfile !== null && !isKnownProfile(cfg.toolProfile)) {
+    log.warn("TOOL_PROFILE is not recognised; continuing WITHOUT pruning", {
+      got: cfg.toolProfile,
+      using: "full (no pruning)",
+      named: Object.entries(describeProfiles())
+        .map(([k, v]) => `${k}=[${v.join(" ")}]`)
+        .join("  "),
+      lists: 'any tool list also works, e.g. TOOL_PROFILE="Read,Edit,Grep,Glob,Bash" - ' +
+        "the same set `claude --tools` takes. A single bare word is read as a profile " +
+        'name, so write "Read," for a one-tool list',
+    });
+    cfg.toolProfile = null;
   }
 
   const registry = await Registry.load(cfg.registryPath, resources, cfg.reasoningBudget);

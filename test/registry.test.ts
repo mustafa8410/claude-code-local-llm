@@ -12,7 +12,7 @@ import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Registry, defaultReasoningBudget, reasoningRange, budgetForEffort } from "../src/registry.ts";
-import { pruneTools } from "../src/tools/prune.ts";
+import { pruneTools, isKnownProfile, describeProfiles } from "../src/tools/prune.ts";
 import { readEffort } from "../src/types.ts";
 import type { HostResources, ToolDef } from "../src/types.ts";
 
@@ -130,6 +130,35 @@ test("tool pruning is deterministic and order-preserving", () => {
     pruneTools(tools, "Read,Bash")!.map((t) => t.name),
     ["Read", "Bash"],
   );
+});
+
+test("an unrecognised TOOL_PROFILE is detectable instead of silently doing nothing", () => {
+  // This was a silent no-op: `TOOL_PROFILE=codng` resolved to null, pruneTools handed
+  // the tools back untouched, and nothing anywhere said so. On a window too small for
+  // the full tool set it surfaced much later as `prompt is too long`, which points at
+  // the model rather than at the typo. server.ts now warns and falls back on this.
+  assert.equal(isKnownProfile("coding"), true);
+  assert.equal(isKnownProfile("analysis"), true);
+  assert.equal(isKnownProfile("full"), true);
+  assert.equal(isKnownProfile("Read,Edit,Grep,Glob,Bash"), true, "a list is valid");
+  assert.equal(isKnownProfile("READ,BASH"), true, "and case does not matter");
+
+  assert.equal(isKnownProfile("codng"), false, "a typo must be caught");
+  assert.equal(isKnownProfile("analsis"), false);
+
+  // A bare word is read as a profile name, never as a one-tool list: treating "Read"
+  // as a list would prune every other tool away, which is a worse outcome for what is
+  // far more likely a mistyped profile.
+  assert.equal(isKnownProfile("Read"), false);
+});
+
+test("the named profiles are exactly what the docs claim", () => {
+  // The README lists these members; drift between the two is how someone picks a
+  // profile that silently lacks the tool they needed.
+  const p = describeProfiles();
+  assert.deepEqual([...p.analysis!], ["read", "glob", "grep", "bash", "powershell", "todowrite"]);
+  assert.ok(p.coding!.includes("write") && p.coding!.includes("edit"));
+  assert.ok(!p.analysis!.includes("write"), "analysis stays read-only");
 });
 
 test("the catalog default is skipped when it cannot run on this host", async () => {

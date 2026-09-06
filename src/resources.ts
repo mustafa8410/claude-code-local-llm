@@ -97,15 +97,67 @@ export async function probeResources(
  * misses. The shortfall is reported in GB so the error message can name a number
  * instead of saying "not enough memory".
  */
+/**
+ * How much VRAM a KV cache costs, per 1024 tokens of context.
+ *
+ * Measured on an RTX 3070 Ti Laptop, Qwen3.5 at `--cache-type-k/v q8_0`. Two models
+ * agreed to the megabyte, because the 4B and the 9B share KV geometry:
+ *
+ *   4B   16K 3406 MiB -> 64K 4462 MiB   = 1056 MiB for 49,152 tokens
+ *   9B   16K 5778 MiB -> 64K 6834 MiB   = 1056 MiB for 49,152 tokens
+ *
+ * That is 22 MiB per 1K tokens. It is a property of the attention shape, not of the
+ * parameter count, so it does NOT scale with size_gb - which is exactly why the old
+ * flat `size * 1.15` could not see a context change at all.
+ */
+const KV_MB_PER_1K_Q8 = 22;
+
+/**
+ * An unquantised KV cache is roughly twice the size. Rather than guess, look at what
+ * the model's own spawn args ask for: the shipped catalog passes q8_0, but a
+ * user-added entry that omits it gets f16 and a cache twice as large.
+ */
+function kvMbFor(contextTokens: number, args: readonly string[] | undefined): number {
+  const quantised = (args ?? []).some((a) => /^q\d/.test(a));
+  const rate = quantised ? KV_MB_PER_1K_Q8 : KV_MB_PER_1K_Q8 * 2;
+  return (contextTokens / 1024) * rate;
+}
+
+/**
+ * A vision model loads a multimodal projector beside the weights, and `size_gb`
+ * describes only the weights. Measured on the Qwen3.5 9B: an 879 MiB mmproj file cost
+ * 1130 MiB resident. Projector sizes vary by model, so this is a floor rather than a
+ * precise figure - but counting zero, as this used to, is the one certainly wrong
+ * answer, and it is wrong in the direction that OOMs.
+ */
+const VISION_MB = 1130;
+
+/** CUDA context and compute buffers. Empirically ~280 MiB; rounded up. */
+const OVERHEAD_MB = 400;
+
 export function checkFit(
   sizeGb: number,
   tier: "vram" | "offload" | "stretch",
   res: HostResources,
+  opts: {
+    contextTokens?: number | undefined;
+    capabilities?: readonly string[] | undefined;
+    args?: readonly string[] | undefined;
+  } = {},
 ): { fits: boolean; shortfallGb: number; note: string } {
   const sizeMb = sizeGb * 1024;
-  // Weights plus KV cache plus CUDA compute buffers. The headroom factor is
-  // deliberately conservative; a model that "just fits" thrashes.
-  const needMb = sizeMb * 1.15;
+
+  // Weights + KV cache + projector + compute buffers, each counted separately.
+  //
+  // This replaces a flat `sizeMb * 1.15`, which was blind to the two things that
+  // actually move: the context window and the vision projector. That mattered - the
+  // 9B with vision at 16K really used 6908 MiB against an estimate of 6547, so the
+  // estimate said "fits" while under-counting by 361 MiB. Verified against six
+  // measurements, this over-estimates by 120-660 MiB, which is the safe direction:
+  // it may refuse a config that would have squeezed in, but it does not invite an OOM.
+  const kvMb = opts.contextTokens ? kvMbFor(opts.contextTokens, opts.args) : 0;
+  const visionMb = (opts.capabilities ?? []).includes("vision") ? VISION_MB : 0;
+  const needMb = sizeMb + kvMb + visionMb + OVERHEAD_MB;
   const hasGpu = res.vramTotalMb !== null;
 
   // A vram-tier model is held to the VRAM budget only when there IS a GPU.
