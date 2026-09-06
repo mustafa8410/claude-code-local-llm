@@ -193,9 +193,10 @@ export function buildUpstreamRequest(
   // reason. What is actually available is whatever the prompt did not already use.
   const requested = typeof req.max_tokens === "number" ? req.max_tokens : 4096;
 
+  let available: number | null = null;
   if (opts.contextWindow && opts.contextWindow > 0) {
     const promptTokens = estimatePromptTokens(out);
-    const available = opts.contextWindow - promptTokens - CONTEXT_SAFETY_TOKENS;
+    available = opts.contextWindow - promptTokens - CONTEXT_SAFETY_TOKENS;
 
     if (available < MIN_OUTPUT_TOKENS) {
       // The prompt genuinely does not fit. Use the upstream's own wording: Claude
@@ -213,26 +214,38 @@ export function buildUpstreamRequest(
     out.max_tokens = requested;
   }
 
-  // Refuse a request that cannot produce an answer, rather than serving an empty one.
+  // Make room for the answer when the model thinks first, rather than refusing.
   //
   // A reasoning model writes its chain of thought into the SAME output allowance as
-  // the reply, and the budget is a spawn argument, so it does not shrink to fit a
-  // small max_tokens. Measured on the 9B at its default 4096-token budget with
-  // max_tokens 500: stop_reason `max_tokens`, 500 output tokens, and a single
-  // `thinking` block with no text at all. To the caller that is a model that answered
-  // nothing, with nothing saying why.
+  // the reply, and --reasoning-budget is a spawn argument, so it does not shrink to
+  // fit a small max_tokens. On the 9B at its 4096 default with max_tokens 500, the
+  // measured result was stop_reason `max_tokens`, 500 output tokens, one `thinking`
+  // block, and no text: a model that answered nothing.
   //
-  // The threshold is the budget itself rather than budget+slack: at exactly the budget
-  // there is room for zero answer tokens, and below it the thinking cannot even finish.
+  // This first REFUSED such a request, on the principle that failing loudly beats
+  // behaving strangely. That was wrong in practice, and a real session proved it:
+  // Claude Code sends small max_tokens of its own accord - 558 was observed - so the
+  // refusal turned working-but-degraded traffic into a hard 400 mid-session. The
+  // request is not unreasonable; it just has to be sized to include the thinking the
+  // backend is going to do regardless.
+  //
+  // So raise it, silently, to the budget plus room for an actual answer - the number
+  // the caller would have asked for had they known about the budget - and only refuse
+  // when even that will not fit the window.
   const budget = opts.reasoningBudget ?? 0;
   const effective = typeof out.max_tokens === "number" ? out.max_tokens : requested;
   if (budget > 0 && effective <= budget) {
-    throw GatewayError.invalidRequest(
-      "max_tokens (" + effective + ") leaves no room to answer: this model thinks " +
-        "before it replies and its reasoning budget is " + budget + " tokens, taken " +
-        "from the same allowance. Raise max_tokens above " + budget + ", or lower the " +
-        "budget with POST /admin/reasoning?budget=N (0 turns thinking off).",
-    );
+    const needed = budget + MIN_OUTPUT_TOKENS;
+    if (available === null || needed <= available) {
+      out.max_tokens = needed;
+    } else {
+      throw GatewayError.invalidRequest(
+        "this model thinks before it replies, and its reasoning budget (" + budget +
+          " tokens) plus room to answer does not fit what the prompt left of the " +
+          "context window (" + available + " tokens). Shorten the prompt, or lower " +
+          "the budget with POST /admin/reasoning?budget=N (0 turns thinking off).",
+      );
+    }
   }
 
   return out;

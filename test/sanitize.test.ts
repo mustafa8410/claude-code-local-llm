@@ -181,40 +181,49 @@ test("system array order is preserved so the prompt cache survives", () => {
   assert.deepEqual(texts, ["first", "second"]);
 });
 
-test("a max_tokens the thinking budget would swallow is refused, not served empty", () => {
+test("a max_tokens the thinking budget would swallow is widened, not refused", () => {
   // A reasoning model writes its chain of thought into the SAME allowance as the
   // reply, and the budget is a spawn argument that does not shrink to fit. Measured
   // on the 9B at its 4096 default with max_tokens 500: stop_reason `max_tokens`, 500
-  // output tokens, one `thinking` block, no text. The caller sees a model that
-  // answered nothing and nothing explaining why.
+  // output tokens, one `thinking` block, no text.
+  //
+  // This first threw. A real session showed that to be the wrong call: Claude Code
+  // sends small max_tokens itself - 558 was observed - so refusing broke live traffic
+  // that was merely sized without knowledge of the budget. Widen instead.
   const req = {
     model: "m",
-    max_tokens: 500,
+    max_tokens: 558,
     messages: [{ role: "user" as const, content: "hi" }],
   };
 
-  assert.throws(
-    () => buildUpstreamRequest(req, {
-      backendAlias: "m", contextWindow: 65536, reasoningBudget: 4096,
-    }),
-    (err: Error) => {
-      assert.match(err.message, /leaves no room to answer/);
-      assert.match(err.message, /4096/, "must name the budget it is competing with");
-      assert.match(err.message, /admin\/reasoning/, "and how to change it");
-      return true;
-    },
+  const widened = buildUpstreamRequest(req, {
+    backendAlias: "m", contextWindow: 65536, reasoningBudget: 4096,
+  });
+  assert.ok(
+    (widened.max_tokens as number) > 4096,
+    `must clear the budget, got ${widened.max_tokens}`,
   );
 
-  // Clearing the bar is fine.
+  // An ample request is left exactly as asked.
   const ok = buildUpstreamRequest(
     { ...req, max_tokens: 8000 },
     { backendAlias: "m", contextWindow: 65536, reasoningBudget: 4096 },
   );
-  assert.equal(ok.max_tokens, 8000);
+  assert.equal(ok.max_tokens, 8000, "no meddling when there was already room");
 
-  // A model that does not think has no budget to compete with, so nothing is refused.
+  // A model that does not think has no budget to compete with; nothing is touched.
   const nonThinking = buildUpstreamRequest(req, {
     backendAlias: "m", contextWindow: 65536, reasoningBudget: 0,
   });
-  assert.equal(nonThinking.max_tokens, 500);
+  assert.equal(nonThinking.max_tokens, 558);
+
+  // Only when even budget+answer cannot fit what the prompt left is it an error, and
+  // the message then points at the prompt and the budget rather than at max_tokens,
+  // which the caller could not have set any better.
+  assert.throws(
+    () => buildUpstreamRequest(req, {
+      backendAlias: "m", contextWindow: 4200, reasoningBudget: 4096,
+    }),
+    /does not fit|prompt is too long/,
+  );
 });
