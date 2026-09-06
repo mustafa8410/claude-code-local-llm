@@ -135,15 +135,16 @@ export class RequestContext {
     const effort = readEffort(body);
     if (effort === null) return Promise.resolve(false);
 
-    // Act only on a level that has held for several requests in a row.
+    // Optional hysteresis: act only on a level that has held for N requests in a row.
     //
-    // Measured without this: 36 effort changes and 35 backend reloads inside one phase,
-    // because requests alternated between two levels and each alternation forced a
-    // respawn. The phase took 537 seconds and produced nothing. Which slot emitted the
-    // odd level was never established - a rerun with identical settings did not
-    // reproduce it - so this guard is deliberately blind to the source. An alternating
-    // pattern can never build a run, while a real change (every following request
-    // carries the new level) clears the bar in a handful of requests.
+    // effortStreak defaults to 1, so by default the user's level applies immediately.
+    // It was 3, after a soak phase logged 36 effort changes and 35 reloads - but that
+    // delay was the wrong tool. Someone who exports CLAUDE_CODE_EFFORT_LEVEL sends the
+    // same level on every request, so a streak does not avoid the reload, it only
+    // postpones it, serving N-1 requests at a budget the user did not ask for. It helps
+    // only against alternation, and effort handling was never confirmed as the source of
+    // that alternation - a rerun did not reproduce it. The knob remains for anyone who
+    // meets a genuinely alternating client.
     if (this.effortRun !== null && this.effortRun.level === effort) {
       this.effortRun.count += 1;
     } else {

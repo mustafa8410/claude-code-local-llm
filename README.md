@@ -143,16 +143,20 @@ dial. Set `EFFORT_FOLLOWS_CLIENT=0` to ignore the client's level entirely.
 The reason to care about that measurement is the reload: the budget is a spawn argument,
 so a level change costs a backend restart.
 
-That reload cost is not theoretical. A soak run with this enabled produced **36 effort
-changes and 35 backend reloads inside a single phase** — requests alternated between two
-levels and every alternation forced a respawn. The phase burned 537 seconds and finished
-no work. A rerun with identical settings did not reproduce the alternation, so which slot
-emits the odd level is still unknown.
+A level therefore applies on the **first** request that carries it, and `EFFORT_STREAK`
+(default `1`) can require it to hold for N consecutive requests first.
 
-So a level is only acted on once it has held for `EFFORT_STREAK` requests in a row
-(default 3). An alternating pattern can never build a run, whatever produces it; a real
-change applies within three requests. The guard is deliberately blind to the source,
-because the source was never identified.
+That default was `3` for a while, and it was the wrong call. A soak run once logged 36
+effort changes and 35 backend reloads in a single phase, so a run of 3 was added to
+starve an alternating client. But it did not help the case that actually happens: someone
+who exports `CLAUDE_CODE_EFFORT_LEVEL` sends the *same* level on every request, so a
+streak never avoids the reload — it postpones it to the third request and serves two
+requests at a budget the user did not ask for. Same reload count, strictly worse output.
+
+It only ever helped against alternation, and effort handling was never confirmed as the
+cause of that alternation — a rerun with identical settings did not reproduce it. Charging
+every user a two-request delay for an unconfirmed diagnosis is not a trade worth making,
+so the knob stays and the default does not.
 
 `thinking` cannot serve this purpose, despite Claude Code also sending it — it arrives as
 `{"type":"adaptive"}` carrying no number, and llama-server ignores it either way.
@@ -160,10 +164,34 @@ because the source was never identified.
 ### Tool schemas are the real context cost
 
 In a measured request, tool definitions were **81%** of the payload (~23,400 of
-~28,800 tokens); the system prompt was only 6%. The highest-leverage fix is
-client-side — `claude --tools "Read,Edit,Grep,Glob,Bash"`, measured at a 73%
-reduction. `TOOL_PROFILE` does it gateway-side when the launch command can't change;
-pruning is deterministic and order-preserving so it can't defeat the prompt cache.
+~28,800 tokens); the system prompt was only 6%.
+
+**On a 16K model this is not an optimisation, it is a prerequisite.** Claude Code
+2.1.236 with its default tool set was measured sending ~27,800 tokens before the
+conversation starts, against a 15,872-token usable window — so an unpruned session fails
+on its very first message, whatever you ask it:
+
+```
+Prompt is too long · the request is ~27828 tokens (limit 15872) but this
+conversation is only ~1519 tokens — the rest is system prompt, tool
+definitions, and attachment content.
+```
+
+Prune client-side with `claude --tools "Read,Edit,Grep,Glob,Bash"` (measured at a 73%
+reduction), or gateway-side with `TOOL_PROFILE` when the launch command cannot change.
+Pruning is deterministic and order-preserving, so it cannot defeat the prompt cache.
+
+Which profile you need depends on the mode, because plan mode adds system prompt of its
+own. Measured against the 9B at 16K:
+
+| `TOOL_PROFILE` | `--permission-mode acceptEdits` | `--permission-mode plan` |
+|---|---|---|
+| unset (`full`) | ✗ prompt too long | ✗ prompt too long |
+| `coding` | ✓ | ✗ prompt too long |
+| `analysis` | ✓ (read-only) | ✓ |
+
+A larger window is the other lever — a 32K model swallows the full tool set — but on 8 GB
+of VRAM the 16K models are the ones worth running.
 
 Also set `CLAUDE_CODE_ATTRIBUTION_HEADER=0`: a varying prompt prefix makes llama.cpp
 log `forcing full prompt re-processing due to lack of cache data` on every turn.
@@ -333,7 +361,7 @@ but Claude Code's agent loop will not work:
 | `GATEWAY_API_KEY` | unset | secret clients must send; setting it enables auth |
 | `REQUIRE_AUTH` | `0` | enforce auth; requires `GATEWAY_API_KEY` or startup fails |
 | `EFFORT_FOLLOWS_CLIENT` | `1` | let Claude Code's `effort` pick the thinking budget |
-| `EFFORT_STREAK` | `3` | consecutive requests a level must hold before it is applied |
+| `EFFORT_STREAK` | `1` | consecutive requests a level must hold before it is applied; `1` applies it at once |
 | `ALLOW_CPU` | `0` | start without a GPU. For trying the gateway out only - see below |
 | `MEMORY_BUDGET_GB` | detected | override the RAM budget when detection is wrong |
 | `CAPTURE_DIR` | unset | record request bodies for contract tests (see below) |

@@ -63,19 +63,26 @@ export interface Config {
    * sends `high` when the user has set no preference, and `high` maps to the budget the
    * model already had. Measured over a twelve-request session with the dial untouched -
    * zero budget changes, one backend spawn. Someone who never turns the dial pays
-   * nothing; the feature costs a reload only when they deliberately change it, and
-   * effortStreak keeps an alternating client from doing so accidentally.
+   * nothing; the feature costs a reload only when they deliberately change it, and the
+   * change then takes effect on the very next request.
    */
   effortFollowsClient: boolean;
   /**
    * How many consecutive requests must carry a level before it is acted on.
    *
-   * A soak test produced 36 effort changes and 35 backend reloads in a single phase:
-   * requests alternated between two levels, and every alternation forced a respawn.
-   * Which slot emitted the odd level was never pinned down - a second run with the same
-   * settings did not reproduce it - so the guard deliberately does not depend on
-   * identifying the culprit. Requiring a run of the same level starves any alternating
-   * pattern of the chance to trigger anything, whatever its source.
+   * DEFAULT 1: the user's chosen level takes effect on the very next request.
+   *
+   * This was 3, to starve an alternating client of the chance to force a respawn - a
+   * soak phase once produced 36 effort changes and 35 reloads. But the delay bought
+   * nothing in the case that actually matters. Someone who exports
+   * CLAUDE_CODE_EFFORT_LEVEL before launching sends the SAME level on every request, so
+   * a streak of 3 does not prevent a reload, it only postpones it to the third request -
+   * identical reload count, two requests served at a budget the user did not ask for.
+   * It pays off only against alternation, and the alternation was never traced to effort
+   * handling at all; a rerun with identical settings did not reproduce it.
+   *
+   * So the default stops charging every user for an unconfirmed diagnosis. Raise it if
+   * an alternating client ever shows up for real.
    */
   effortStreak: number;
   toolProfile: string | null;
@@ -157,7 +164,7 @@ export function loadConfig(): Config {
         ? null
         : envInt("REASONING_BUDGET", 0),
     effortFollowsClient: envBool("EFFORT_FOLLOWS_CLIENT", true),
-    effortStreak: Math.max(1, envInt("EFFORT_STREAK", 3)),
+    effortStreak: Math.max(1, envInt("EFFORT_STREAK", 1)),
     toolProfile: process.env.TOOL_PROFILE ?? null,
     captureDir: process.env.CAPTURE_DIR ?? null,
     logLevel: envEnum("LOG_LEVEL", ["debug", "info", "warn", "error"] as const, "info"),

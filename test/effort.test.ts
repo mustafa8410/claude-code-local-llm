@@ -141,6 +141,37 @@ test("the feature defaults to enabled", () => {
   }
 });
 
+test("by default the user's level applies on the FIRST request carrying it", async () => {
+  // The point of the default. A streak of 3 served two requests at a budget the user
+  // had not asked for and did not save a reload - someone who exports
+  // CLAUDE_CODE_EFFORT_LEVEL sends the same level every time, so the reload was merely
+  // postponed to the third request. Anyone who genuinely meets an alternating client
+  // can still raise EFFORT_STREAK.
+  const saved = process.env.EFFORT_STREAK;
+  delete process.env.EFFORT_STREAK;
+  try {
+    assert.equal(loadConfig().effortStreak, 1, "no waiting by default");
+  } finally {
+    if (saved === undefined) delete process.env.EFFORT_STREAK;
+    else process.env.EFFORT_STREAK = saved;
+  }
+
+  const reg = await registry();
+  const sup = fakeSupervisor("local-claude-thinker");
+  const ctx = new RequestContext(cfg({ effortStreak: 1 }), reg, sup as never, HOST);
+  const model = reg.get("local-claude-thinker")!;
+  const before = model.reasoningBudget;
+
+  await ctx.applyClientEffort(model, body("max"));
+  assert.notEqual(model.reasoningBudget, before, "honoured immediately, not on request 3");
+  assert.equal(model.reasoningBudget, 8192);
+  assert.equal(sup.stops(), 1, "and the reload is paid once, up front");
+
+  // Still exactly once for the rest of the session - the level has not changed.
+  for (let i = 0; i < 5; i++) await ctx.applyClientEffort(model, body("max"));
+  assert.equal(sup.stops(), 1, "a steady level costs nothing after the first request");
+});
+
 test("nothing happens at all when the feature is off", async () => {
   const reg = await registry();
   const sup = fakeSupervisor("local-claude-thinker");
