@@ -1,4 +1,4 @@
-# claude-local-llm
+# claude-code-local-llm
 #
 #   docker compose up -d            # GPU (NVIDIA)
 #   docker compose --profile cpu up -d   # no GPU
@@ -12,7 +12,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: claude-local-llm:latest
+    image: claude-code-local-llm:latest
     ports:
       - "8787:8787"
     volumes:
@@ -65,7 +65,7 @@ services:
       args:
         # Pinned by digest for the same reason as the GPU base - see Dockerfile.
         BASE_IMAGE: ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4
-    image: claude-local-llm:cpu
+    image: claude-code-local-llm:cpu
     ports:
       - "8787:8787"
     volumes:

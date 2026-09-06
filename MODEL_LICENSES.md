@@ -2,7 +2,7 @@
 
 ## The important thing first: this image ships no model weights
 
-`claude-local-llm` distributes a **catalog** — `config/models.yaml` is a list of pointers
+`claude-code-local-llm` distributes a **catalog** — `config/models.yaml` is a list of pointers
 to Hugging Face repositories. No GGUF file is baked into the image, and none is included
 in this repository. `llama-server` downloads weights into your `/models` volume the first
 time you use a model.
@@ -15,7 +15,7 @@ between you and whoever published it — the gateway does not check, and cannot.
 
 | Component | License |
 |---|---|
-| `claude-local-llm` (this repository) | MIT — see [LICENSE](LICENSE) |
+| `claude-code-local-llm` (this repository) | MIT — see [LICENSE](LICENSE) |
 
 ## The container's base images
 

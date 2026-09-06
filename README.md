@@ -1,4 +1,4 @@
-# claude-local-llm
+# claude-code-local-llm
 
 Run any local GGUF model behind Claude Code.
 
@@ -123,13 +123,17 @@ Code sends `output_config.effort` on **every** request, and the user sets it wit
 `CLAUDE_CODE_EFFORT_LEVEL` — so the intent arrives already expressed as five discrete
 levels, with nothing to quantise:
 
-| `CLAUDE_CODE_EFFORT_LEVEL` | Budget on a 16K model |
-|---|---|
-| `low` | 512 |
-| `medium` | 1024 |
-| `high` *(what Claude Code sends by default)* | **2048** — the model's own default |
-| `xhigh` | 4096 |
-| `max` | 8192 — the ceiling, half the window |
+| `CLAUDE_CODE_EFFORT_LEVEL` | Formula | 64K default model | 16K model |
+|---|---|---|---|
+| `low` | context ÷ 32 | 2048 | 512 |
+| `medium` | context ÷ 16 | 4096 | 1024 |
+| `high` *(what Claude Code sends by default)* | the model's own default | **4096** | **2048** |
+| `xhigh` | context ÷ 4 | 16384 | 4096 |
+| `max` | the ceiling, half the window | 32768 | 8192 |
+
+The budgets scale with the window, so they moved when the default model went to 64K. Note
+that `medium` and `high` coincide there — the derived default is an eighth of the window
+capped at 4096, and a 64K window hits that cap.
 
 The ladder is anchored so `high` lands exactly on the budget the model would have had
 anyway: turning the feature on changes nothing until the user actually turns their dial.
@@ -343,7 +347,7 @@ an entry leaves the weights in the cache.
 Using a GGUF you already have on disk? Mount it and pass `path` instead of `hf`:
 
 ```bash
-docker run ... -v /my/models:/models/mine claude-local-llm
+docker run ... -v /my/models:/models/mine claude-code-local-llm
 curl -X POST localhost:8787/admin/models -H 'content-type: application/json' \
   -d '{"id":"local-claude-mine","path":"/models/mine/model.gguf","size_gb":4,
        "context":32768,"capabilities":["tools"],"tier":"vram"}'
@@ -530,7 +534,7 @@ spending a single GPU token.
 
 ```bash
 docker run --gpus all -p 8787:8787 -v llm-models:/models \
-  -v captures:/captures -e CAPTURE_DIR=/captures claude-local-llm
+  -v captures:/captures -e CAPTURE_DIR=/captures claude-code-local-llm
 ```
 
 `/captures` exists in the image and is owned by the gateway user. Any other path at the
@@ -570,8 +574,8 @@ on first use, so the image stays image-sized and survives upgrades.
 or Docker Desktop with WSL2 GPU support on Windows.
 
 ```bash
-docker build -t claude-local-llm .
-docker run --gpus all -p 8787:8787 -v llm-models:/models claude-local-llm
+docker build -t claude-code-local-llm .
+docker run --gpus all -p 8787:8787 -v llm-models:/models claude-code-local-llm
 ```
 
 Or `docker compose up -d`.
@@ -590,7 +594,7 @@ The CUDA image runs CPU-only perfectly well when you *do* want to poke at it —
 flag, `ALLOW_CPU=1`, verified working:
 
 ```bash
-docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-local-llm
+docker run -e ALLOW_CPU=1 -p 8787:8787 -v llm-models:/models claude-code-local-llm
 ```
 
 And the CPU **build** is still supported, because it is a cheap structural test of this
@@ -598,7 +602,7 @@ Dockerfile that does not pull 7 GB — `docker compose --profile cpu up -d`, or:
 
 ```bash
 docker build --build-arg BASE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:1394ab6c8e418859b282ff5a38a218ab318b2b4de8848c611b92e92017d6d8e4 \
-  -t claude-local-llm:cpu .
+  -t claude-code-local-llm:cpu .
 ```
 </details>
 
@@ -612,7 +616,7 @@ build succeeds proves nothing about the parse.
 When building an image to publish, pass provenance so it can be traced back to a commit:
 
 ```bash
-docker build -t <user>/claude-local-llm:<tag> \
+docker build -t <user>/claude-code-local-llm:<tag> \
   --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" \
   --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
 ```

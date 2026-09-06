@@ -1,5 +1,5 @@
 {
-  "name": "claude-local-llm",
+  "name": "claude-code-local-llm",
   "version": "0.1.0",
   "description": "Run any local GGUF model behind Claude Code. Anthropic-compatible gateway with VRAM-aware model hot-swapping.",
   "type": "module",
