@@ -316,6 +316,10 @@ export function startupBanner(registry: Registry, cfg: Config): string {
     bar,
     "  claude-code-local-llm is ready at " + url,
     "  serving: " + model,
+    "",
+    // The one line worth finding if you read nothing else. Everything below is also on
+    // that page, laid out for a person rather than a terminal.
+    "  >> HELP PAGE:  " + url + "  (open it in a browser)",
     bar,
     "",
     "  OPTION A - point Claude Code at it permanently.",

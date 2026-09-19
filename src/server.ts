@@ -590,8 +590,12 @@ async function main(): Promise<void> {
   });
 
   server.listen(cfg.port, cfg.host, () => {
+    // Carried on the log line too, not only in the banner: NO_BANNER=1 and log
+    // aggregators are exactly the setups where someone cannot see the banner and has
+    // nothing else telling them the page exists.
     log.info("gateway listening", {
       url: "http://localhost:" + cfg.port,
+      help: "http://localhost:" + cfg.port + " - open in a browser for setup and settings",
       hint: "ANTHROPIC_BASE_URL=http://localhost:" + cfg.port,
     });
     // The container should tell you how to use it, not leave you to find the endpoint
