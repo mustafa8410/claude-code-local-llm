@@ -365,6 +365,7 @@ export function startupBanner(registry: Registry, cfg: Config): string {
     ...(notes.length > 0 ? ["", ...notes.map((n) => "  ! " + n)] : []),
     "",
     "  Other models:  curl -s " + url + "/admin/models",
+    "  All settings:   curl -s " + url + "/admin/config",
     "  Config for one: curl -s '" + url + "/admin/client-env?model=<id>'",
     bar,
     "",

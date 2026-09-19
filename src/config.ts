@@ -151,6 +151,65 @@ function envEnum<T extends string>(name: string, allowed: readonly T[], fallback
   return raw as T;
 }
 
+/**
+ * Every environment variable this gateway reads, for `GET /admin/config`.
+ *
+ * The container is the only documentation somebody who pulled the image actually has.
+ * Before this existed the options lived solely in a README on GitHub, which a
+ * `docker run` never shows you, and /admin/metrics published four of the twenty-four.
+ *
+ * `test/config.test.ts` reads THIS FILE and fails if any env var the code consults is
+ * missing here, so the list cannot quietly fall behind the parsing below it.
+ */
+export const OPTIONS: ReadonlyArray<{
+  name: string;
+  def: string;
+  doc: string;
+}> = [
+  { name: "PORT", def: "8787", doc: "port the gateway listens on" },
+  { name: "HOST", def: "0.0.0.0", doc: "interface to bind" },
+  { name: "TOOL_PROFILE", def: "unset",
+    doc: "coding | analysis | any tool list. UNSET MEANS NO PRUNING, which leaves a " +
+      "local model little room - see the startup warning" },
+  { name: "ALLOW_CPU", def: "0",
+    doc: "start without a GPU. Prefill is ~18 tok/s; Claude Code is unlikely to be usable" },
+  { name: "MEMORY_BUDGET_GB", def: "detected",
+    doc: "override the detected RAM budget, for when WSL2 detection is wrong" },
+  { name: "GATEWAY_API_KEY", def: "unset",
+    doc: "secret clients must send. Setting it turns authentication on" },
+  { name: "REQUIRE_AUTH", def: "0",
+    doc: "require a credential; refuses to start without GATEWAY_API_KEY" },
+  { name: "BACKGROUND_STRATEGY", def: "reuse-primary",
+    doc: "reuse-primary | swap | reject - what to do with an unrecognised model id" },
+  { name: "IDLE_TTL_SECONDS", def: "900", doc: "unload the backend after this idle time; 0 disables" },
+  { name: "REASONING_BUDGET", def: "per-model",
+    doc: "default thinking budget. -1 unrestricted, 0 off, N tokens" },
+  { name: "EFFORT_FOLLOWS_CLIENT", def: "1",
+    doc: "let CLAUDE_CODE_EFFORT_LEVEL pick the thinking budget" },
+  { name: "EFFORT_STREAK", def: "1",
+    doc: "consecutive requests a level must hold before it is applied" },
+  { name: "TIER_MODE", def: "follow",
+    doc: "follow | distinct - whether /model tiers share the primary or take a model each" },
+  { name: "TIER_OPUS", def: "unset", doc: "pin the Opus tier to a model id" },
+  { name: "TIER_SONNET", def: "unset", doc: "pin the Sonnet tier to a model id" },
+  { name: "TIER_HAIKU", def: "unset", doc: "pin the Haiku tier to a model id" },
+  { name: "CAPTURE_DIR", def: "unset",
+    doc: "record request bodies here. Use /captures in the container; they contain your " +
+      "prompts and paths, so scrub before sharing" },
+  { name: "LOG_LEVEL", def: "info", doc: "debug | info | warn | error" },
+  { name: "NO_BANNER", def: "0", doc: "suppress the configuration block printed at startup" },
+  { name: "KEEPALIVE_MS", def: "10000", doc: "gap between SSE keepalives during a model swap" },
+  { name: "STREAM_WATCHDOG_MS", def: "300000",
+    doc: "Claude Code abandons a stream silent this long; stay under it" },
+  { name: "BACKEND_PORT", def: "8080", doc: "port llama-server is spawned on, loopback only" },
+  // Set by the image. Listed because a bind-mounted catalog or model cache is a
+  // supported thing to do, and nothing else would tell you the variable names.
+  { name: "MODELS_CONFIG", def: "/app/config/models.yaml", doc: "path to the model catalog" },
+  { name: "LLAMA_CACHE", def: "/models", doc: "where weights are downloaded and cached" },
+  { name: "LLAMA_SERVER_BIN", def: "/usr/local/bin/llama-server", doc: "llama-server binary" },
+  { name: "GATEWAY_ROOT", def: "/app", doc: "base for relative paths" },
+];
+
 export function loadConfig(): Config {
   const root = process.env.GATEWAY_ROOT ?? process.cwd();
 

@@ -474,6 +474,7 @@ but Claude Code's agent loop will not work:
 | `GET /v1/models` | discovery for the `/model` picker |
 | `/api/hello` | connection-warming probe; answers any method |
 | `GET /health` | state, backend status, recent backend logs |
+| `GET /admin/config` | **every setting, its default and current value** — the container documents itself |
 | `GET /admin/models` | catalog with capability and availability flags |
 | `POST /admin/models` | add a model the image never shipped (see below) |
 | `DELETE /admin/models` | forget a model you added: `?model=<id>` |
@@ -485,6 +486,14 @@ but Claude Code's agent loop will not work:
 | `GET /admin/metrics` | spawn/swap counts, config |
 
 ## Configuration
+
+The table below is a copy. The container is the source of truth — it lists every
+option, its default and what it is currently set to, which is the only
+documentation available to somebody who pulled the image rather than the repo:
+
+```bash
+curl -s localhost:8787/admin/config
+```
 
 | Variable | Default | Purpose |
 |---|---|---|

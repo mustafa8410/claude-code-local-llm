@@ -7,7 +7,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig, OPTIONS } from "../src/config.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 /** Run `fn` with the given env applied, restoring whatever was there before. */
 function withEnv(vars: Record<string, string | undefined>, fn: () => void): void {
@@ -80,4 +83,34 @@ test("MEMORY_BUDGET_GB rejects nonsense rather than becoming NaN", () => {
   withEnv({ ...CLEAR, MEMORY_BUDGET_GB: "7.5" }, () => {
     assert.equal(loadConfig().memoryBudgetGb, 7.5);
   });
+});
+
+test("every environment variable the code reads is documented in OPTIONS", () => {
+  // /admin/config is the only documentation someone who pulled the image has - a
+  // `docker run` never shows them a README. That makes drift between the parsing and
+  // the published list a real failure rather than untidiness, so this reads the source
+  // and holds the two together. Before OPTIONS existed the gateway read 24 variables
+  // and published 4 of them.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(path.join(here, "..", "src", "config.ts"), "utf8");
+
+  const read = new Set<string>();
+  for (const m of src.matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) read.add(m[1]!);
+  for (const m of src.matchAll(/env(?:Int|Bool|Float|Enum)\("([A-Z][A-Z0-9_]{2,})"/g)) {
+    read.add(m[1]!);
+  }
+  assert.ok(read.size > 15, `expected to find the env reads, found ${read.size}`);
+
+  const documented = new Set(OPTIONS.map((o) => o.name));
+  const missing = [...read].filter((n) => !documented.has(n)).sort();
+  assert.deepEqual(
+    missing,
+    [],
+    `read by config.ts but absent from OPTIONS, so /admin/config hides them: ${missing.join(", ")}`,
+  );
+
+  for (const o of OPTIONS) {
+    assert.ok(o.doc.length > 10, `${o.name} needs a real description`);
+    assert.ok(o.def.length > 0, `${o.name} needs a stated default`);
+  }
 });

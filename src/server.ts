@@ -8,7 +8,7 @@
 
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { loadConfig, type Config } from "./config.ts";
+import { loadConfig, OPTIONS, type Config } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
 import { Registry, reasoningRange } from "./registry.ts";
@@ -183,6 +183,23 @@ async function route(
         // Surfaced prominently: a model without tool support will not sustain
         // Claude Code's agent loop, whatever else it scores well on.
         drives_claude_code: m.capabilities.includes("tools"),
+      })),
+    });
+    return;
+  }
+
+  if (path === "/admin/config" && method === "GET") {
+    // Every option, its default, and what it is currently set to. The container has to
+    // be able to explain itself: someone who pulled the image has no README.
+    sendJson(res, 200, {
+      note:
+        "environment variables this gateway reads. Set them with -e on docker run, or " +
+        "under `environment:` in docker-compose.yml",
+      options: OPTIONS.map((o) => ({
+        name: o.name,
+        default: o.def,
+        current: process.env[o.name] ?? null,
+        description: o.doc,
       })),
     });
     return;
