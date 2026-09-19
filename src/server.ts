@@ -434,6 +434,27 @@ async function main(): Promise<void> {
     cfg.toolProfile = null;
   }
 
+  // Say at startup that nothing is pruning tools, because the default does not and the
+  // consequence is the single biggest thing between this working and not.
+  //
+  // There is already a runtime warning when an oversized tool payload actually arrives,
+  // but that fires after someone has connected and started work. This one lands before,
+  // where it can still change how they launch the client. It is not an error: pruning
+  // client-side with `claude --tools` is the preferred fix and leaves TOOL_PROFILE unset,
+  // so this has to stay a caution rather than a refusal.
+  if (cfg.toolProfile === null) {
+    log.warn("no gateway-side tool pruning configured (TOOL_PROFILE unset)", {
+      why:
+        "Claude Code sends ~36 tool definitions on every request. Measured against the " +
+        "64K model: 38.7K tokens of schemas left 5.7K for the conversation and it " +
+        "compacted every few turns; pruning to seven tools left 24.7K and it compacted " +
+        "never, on the same task",
+      fix_client: 'claude --tools "Read,Write,Edit,Bash,Glob,Grep,TodoWrite"',
+      fix_gateway: "or start this container with TOOL_PROFILE=coding",
+      note: "ignore this if you already pass --tools; the gateway cannot see that from here",
+    });
+  }
+
   const registry = await Registry.load(cfg.registryPath, resources, cfg.reasoningBudget);
   const unavailable = registry.list().filter((m) => !m.available);
   log.info("registry loaded", {

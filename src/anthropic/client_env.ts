@@ -337,9 +337,30 @@ export function startupBanner(registry: Registry, cfg: Config): string {
     // is the default shell on the platform this container is most often run from.
     "    pwsh    curl.exe -s '" + url + "/admin/client-env?format=ps1' | Invoke-Expression",
     "",
-    "  Then run Claude Code as usual:",
-    "",
-    "    claude",
+    // The launch line carries the tool list unless the gateway is already pruning.
+    // It is the one command people copy, and getting it wrong costs them most of the
+    // window - measured, on this model: 38.7K of tool schemas left 5.7K for the
+    // conversation and compacted every few turns, while a seven-tool list left 24.7K
+    // and compacted never.
+    ...(cfg.toolProfile
+      ? [
+          "  Then run Claude Code. This gateway is pruning tools (TOOL_PROFILE=" +
+            cfg.toolProfile + "), so no flag is needed:",
+          "",
+          "    claude",
+        ]
+      : [
+          "  Then run Claude Code. KEEP THE TOOL LIST - it is not a tuning tip:",
+          "",
+          '    claude --tools "Read,Write,Edit,Bash,Glob,Grep,TodoWrite"',
+          "",
+          "  Claude Code otherwise sends ~36 tool definitions on every request. On this",
+          "  model that measured 38.7K tokens of a " +
+            Math.round(Number(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ?? 0) / 1024) +
+            "K window, leaving too little for a",
+          "  conversation - it then compacts every few turns and blames a file for being",
+          "  too large. Set TOOL_PROFILE on the container to enforce it gateway-side.",
+        ]),
     // Only open a gap when there is actually something to put in it.
     ...(notes.length > 0 ? ["", ...notes.map((n) => "  ! " + n)] : []),
     "",
