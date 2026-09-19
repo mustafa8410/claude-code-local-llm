@@ -152,6 +152,17 @@ function envEnum<T extends string>(name: string, allowed: readonly T[], fallback
 }
 
 /**
+ * Where the full documentation lives.
+ *
+ * Anything the container prints or serves that points at "the README" has to carry this,
+ * because a person who ran `docker pull` has no repository to look in and no reason to
+ * know the project is on GitHub at all. Kept in one place so the banner, /admin/config
+ * and the image's own OCI label cannot drift apart - test/config.test.ts checks the
+ * Dockerfile agrees with it.
+ */
+export const REPO = "https://github.com/mustafa8410/claude-code-local-llm";
+
+/**
  * Every environment variable this gateway reads, for `GET /admin/config`.
  *
  * The container is the only documentation somebody who pulled the image actually has.
@@ -258,7 +269,8 @@ export const EXAMPLES: ReadonlyArray<{ what: string; run: string; why: string }>
       "docker run -d --gpus all -p 8787:8787 -v llm-models:/models -v caps:/captures " +
       "-e CAPTURE_DIR=/captures -e LOG_LEVEL=debug claude-code-local-llm",
     why:
-      "how every client quirk in the README was found. /captures is pre-created and owned " +
+      "how every client quirk documented at " + REPO + " was found. /captures is " +
+      "pre-created and owned " +
       "by the gateway user; the files contain your prompts and paths, so scrub before sharing",
   },
   {

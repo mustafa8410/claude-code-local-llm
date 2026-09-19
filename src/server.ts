@@ -8,7 +8,7 @@
 
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { loadConfig, OPTIONS, EXAMPLES, type Config } from "./config.ts";
+import { loadConfig, OPTIONS, EXAMPLES, REPO, type Config } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
 import { Registry, reasoningRange } from "./registry.ts";
@@ -195,6 +195,7 @@ async function route(
       note:
         "environment variables this gateway reads. Set them with -e on docker run, or " +
         "under `environment:` in docker-compose.yml",
+      docs: REPO,
       options: OPTIONS.map((o) => ({
         name: o.name,
         default: o.def,

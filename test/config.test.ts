@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, OPTIONS } from "../src/config.ts";
+import { loadConfig, OPTIONS, REPO } from "../src/config.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -113,4 +113,18 @@ test("every environment variable the code reads is documented in OPTIONS", () =>
     assert.ok(o.doc.length > 10, `${o.name} needs a real description`);
     assert.ok(o.def.length > 0, `${o.name} needs a stated default`);
   }
+});
+
+test("the documentation URL the container prints matches the image's own label", () => {
+  // The banner, /admin/config and the OCI labels all tell someone where the docs are.
+  // If they disagree, at least one of them is sending people nowhere - and the person
+  // most likely to follow the link is the one who pulled the image and has no repo.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const dockerfile = readFileSync(path.join(here, "..", "Dockerfile"), "utf8");
+
+  assert.match(REPO, /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/, "REPO must be a plain repo URL");
+  assert.ok(
+    dockerfile.includes('org.opencontainers.image.source="' + REPO + '"'),
+    `Dockerfile's image.source label does not match REPO (${REPO})`,
+  );
 });

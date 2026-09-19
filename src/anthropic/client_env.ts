@@ -25,6 +25,7 @@
 
 import type { ServerResponse } from "node:http";
 import type { Registry, ResolvedModel } from "../registry.ts";
+import { REPO } from "../config.ts";
 import type { Config } from "../config.ts";
 
 /** Fraction of the window handed to output; the rest is prompt headroom. */
@@ -364,9 +365,10 @@ export function startupBanner(registry: Registry, cfg: Config): string {
     // Only open a gap when there is actually something to put in it.
     ...(notes.length > 0 ? ["", ...notes.map((n) => "  ! " + n)] : []),
     "",
-    "  Other models:  curl -s " + url + "/admin/models",
-    "  All settings:   curl -s " + url + "/admin/config",
+    "  Other models:   curl -s " + url + "/admin/models",
     "  Config for one: curl -s '" + url + "/admin/client-env?model=<id>'",
+    "  All settings:   curl -s " + url + "/admin/config",
+    "  Full docs:      " + REPO,
     bar,
     "",
   ];
