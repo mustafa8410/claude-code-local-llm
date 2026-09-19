@@ -153,6 +153,61 @@ async function streamWithSwap(
   await forward(res, ctx, target, body, true);
 }
 
+/**
+ * Say so, once, when the tool schemas have eaten the window.
+ *
+ * This is the difference between the product working and not, and it is invisible from
+ * the client: Claude Code reports "autocompact is thrashing ... a file being read or a
+ * tool output is likely too large", which points at the wrong thing entirely. Measured
+ * on a 64K model over one real session:
+ *
+ *              tools   conversation   compactions   result
+ *   unpruned   38.7k          5.7k         3+       276 lines, 1 file
+ *   pruned      2.6k         24.7k          0       566 lines, 3 files, no context loss
+ *
+ * Same task, same model, same gateway - 1 spawn and 0 swaps in both. The only variable
+ * was 36 tool definitions riding along on every single turn, and one of them, Artifact,
+ * was 12.9k by itself.
+ *
+ * Warned once per process rather than per request: it is a property of how the client
+ * was launched, not of any one message, and repeating it would bury the logs.
+ */
+let warnedAboutTools = false;
+
+function warnIfToolsCrowdOutTheWindow(
+  ctx: RequestContext,
+  target: ResolvedModel,
+  body: MessagesRequest,
+): void {
+  if (warnedAboutTools || ctx.config.toolProfile) return;
+  const tools = body.tools;
+  if (!Array.isArray(tools) || tools.length === 0) return;
+
+  // Same 4-bytes-per-token rule the capture analysis used; this only has to be right
+  // to the nearest few thousand to decide whether to speak up.
+  const tokens = Math.round(JSON.stringify(tools).length / 4);
+  const share = tokens / target.context;
+  if (share < 0.25) return;
+
+  warnedAboutTools = true;
+  log.warn("tool definitions are taking most of this model's context window", {
+    tools: tools.length,
+    tool_tokens: tokens,
+    window: target.context,
+    share: Math.round(share * 100) + "% of the window, on EVERY request",
+    consequence:
+      "Claude Code reserves a further ~29K for its compaction buffer, so this can " +
+      "leave no usable room at all - it then compacts every few turns and blames a " +
+      "file for being too large",
+    fix:
+      'launch with `claude --tools "Read,Write,Edit,Bash,Glob,Grep,TodoWrite"`, or set ' +
+      "TOOL_PROFILE=coding on this container",
+    measured:
+      "same task on a 64K model: 38.7K of tools gave 5.7K of conversation and " +
+      "constant compaction; 2.6K gave 24.7K and none",
+  });
+}
+
 async function forward(
   res: ServerResponse,
   ctx: RequestContext,
@@ -160,6 +215,8 @@ async function forward(
   body: MessagesRequest,
   headersAlreadySent: boolean,
 ): Promise<void> {
+  warnIfToolsCrowdOutTheWindow(ctx, target, body);
+
   let prepared: MessagesRequest = body;
   if (ctx.config.toolProfile) {
     const pruned = pruneTools(body.tools, ctx.config.toolProfile);

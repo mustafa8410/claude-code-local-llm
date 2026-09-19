@@ -19,8 +19,8 @@ Claude Code  ──►  gateway :8787  ──►  llama-server :8080  ──► 
 # 2. point Claude Code at it - the gateway emits the exact config for the model
 eval "$(curl -s 'http://localhost:8787/admin/client-env?format=sh' | grep ^export)"
 
-# 3. use it
-claude --tools "Read,Edit,Grep,Glob,Bash"
+# 3. use it - the tool list is NOT optional, see "Tool schemas" below
+claude --tools "Read,Write,Edit,Bash,Glob,Grep,TodoWrite"
 ```
 
 PowerShell — note `curl.exe`, not `curl`:
@@ -189,18 +189,62 @@ conversation is only ~1519 tokens — the rest is system prompt, tool
 definitions, and attachment content.
 ```
 
-**The default model now has a 64K window, so pruning is optional again.** Verified with
-no `TOOL_PROFILE` and no `--tools`: plan mode, write a file, and read-then-edit all
-succeed. Prune when you want the speed — a smaller prefix is less to prefill every turn —
-not because you have to.
+**Raising the default model to 64K did not make pruning optional.** That was written here
+once and it was wrong; a full session disproved it. See the measurement below.
+
+### The measurement: same task, twice
+
+One prompt — *write a Tetris game in C* — against the 9B at 64K, run start to finish
+twice. The only difference was the tool set.
+
+| | Unpruned | Pruned |
+|---|---|---|
+| Tools sent, every turn | 36 tools, **38.7K tokens** | 6 tools, **2.6K** |
+| Peak conversation | 5.7K | **24.7K** |
+| Requests completed | ~10 | **70** |
+| Compactions | 3+, *"autocompact is thrashing"* | **0** |
+| What it produced | 276 lines, one file | **566 lines across `main.c`, `game.h`, `Makefile`** |
+| Gateway | 1 spawn, 0 swaps, 0 errors | 1 spawn, 0 swaps, 0 errors |
+
+Both runs compiled. The second produced a properly structured program — include guards,
+board constants, all seven tetromino shapes, a build file — and never lost its own
+history across seventy turns.
+
+The arithmetic behind it, from Claude Code's own `/context` readout on the unpruned run:
+
+```
+window                65.5k
+system tools          36.8k   (56%)
+system prompt          1.4k
+skills (14)            2.0k
+autocompact buffer    29.4k   (reserved by the client)
+                     ───────
+                      69.6k   → 4.1k OVER the window before you type anything
+```
+
+There was never room for a conversation. It compacted from the first message, and
+88% of every request was tool definitions.
+
+**The cost is concentrated.** Of that 38.7K, a single tool — `Artifact` — was **12.9K**,
+a fifth of the entire window. `PowerShell`, `DesignSync`, `Monitor`, `Workflow`,
+`CronCreate` and friends made up most of the rest, none of them needed to write C.
+
+Note what Claude Code reports when this happens: *"a file being read or a tool output is
+likely too large for the context window."* It is pointing at the wrong thing. The file was
+6 KB. The gateway now warns with the real numbers the first time it sees an oversized tool
+payload, naming the share of the window and the fix.
 
 Two ways, and they take the same tool names:
 
 ```bash
-claude --tools "Read,Edit,Grep,Glob,Bash"          # client-side, 73% reduction
-TOOL_PROFILE="Read,Edit,Grep,Glob,Bash"            # gateway-side, identical set
-TOOL_PROFILE=coding                                # or a named shorthand
+claude --tools "Read,Write,Edit,Bash,Glob,Grep,TodoWrite"   # client-side
+TOOL_PROFILE="Read,Write,Edit,Bash,Glob,Grep,TodoWrite"     # gateway-side, identical
+TOOL_PROFILE=coding                                         # or a named shorthand
 ```
+
+That list is what the 2.6K column above was measured with. Prefer the client-side flag
+when you can — it is per-invocation, so a session that genuinely needs `WebFetch` can
+have it without reconfiguring the container.
 
 `TOOL_PROFILE` takes **any** comma-separated list, case-insensitively, including MCP
 tools (`mcp__server__tool`) — the named profiles are just shorthands over the same
