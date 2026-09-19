@@ -210,6 +210,76 @@ export const OPTIONS: ReadonlyArray<{
   { name: "GATEWAY_ROOT", def: "/app", doc: "base for relative paths" },
 ];
 
+/**
+ * Worked invocations for `GET /admin/config`.
+ *
+ * A list of variables tells you what exists, not which ones matter together. These are
+ * the combinations that actually come up, written so they can be pasted. Every one has
+ * been run against this image.
+ */
+export const EXAMPLES: ReadonlyArray<{ what: string; run: string; why: string }> = [
+  {
+    what: "normal use",
+    run:
+      "docker run -d --gpus all -p 8787:8787 -v llm-models:/models claude-code-local-llm",
+    why: "GPU, weights kept in a named volume so an image upgrade does not re-download them",
+  },
+  {
+    what: "enforce tool pruning for every client",
+    run:
+      "docker run -d --gpus all -p 8787:8787 -v llm-models:/models " +
+      "-e TOOL_PROFILE=coding claude-code-local-llm",
+    why:
+      "measured on the 64K model: unpruned, 38.7K of tool schemas left 5.7K for the " +
+      "conversation and it compacted every few turns; pruned, 24.7K and it never did. " +
+      "Prefer `claude --tools \"...\"` per session; use this when the launch command is " +
+      "not yours to change",
+  },
+  {
+    what: "reachable from another machine",
+    run:
+      "docker run -d --gpus all -p 8787:8787 -v llm-models:/models " +
+      "-e GATEWAY_API_KEY=$(openssl rand -hex 24) claude-code-local-llm",
+    why:
+      "setting the key turns authentication on by itself. Do this before publishing the " +
+      "port: unauthenticated, anyone who can reach it can load models onto your GPU",
+  },
+  {
+    what: "no GPU, just to look at it",
+    run:
+      "docker run -d -p 8787:8787 -v llm-models:/models -e ALLOW_CPU=1 claude-code-local-llm",
+    why:
+      "prefill is ~18 tok/s, so a realistic Claude Code prompt needs ~370s and the client " +
+      "gives up at 300s. Fine for poking the endpoints, not for real sessions",
+  },
+  {
+    what: "capture what the client actually sends",
+    run:
+      "docker run -d --gpus all -p 8787:8787 -v llm-models:/models -v caps:/captures " +
+      "-e CAPTURE_DIR=/captures -e LOG_LEVEL=debug claude-code-local-llm",
+    why:
+      "how every client quirk in the README was found. /captures is pre-created and owned " +
+      "by the gateway user; the files contain your prompts and paths, so scrub before sharing",
+  },
+  {
+    what: "Docker Desktop, where the Run button gives no GPU",
+    run: "docker compose up -d",
+    why:
+      "compose reserves the GPU for you. The Run button passes no --gpus flag and cannot " +
+      "be given one afterwards, so a container created with it never gets a GPU. To fix " +
+      'that button for good, add "default-runtime": "nvidia" under Settings > Docker Engine',
+  },
+  {
+    what: "WSL2 reporting the wrong amount of RAM",
+    run:
+      "docker run -d --gpus all -p 8787:8787 -v llm-models:/models " +
+      "-e MEMORY_BUDGET_GB=8 claude-code-local-llm",
+    why:
+      "the gateway reads the cgroup limit, but under Docker Desktop the ceiling that binds " +
+      "is the WSL2 VM's share of host RAM, which neither the cgroup nor os.totalmem() reports",
+  },
+];
+
 export function loadConfig(): Config {
   const root = process.env.GATEWAY_ROOT ?? process.cwd();
 

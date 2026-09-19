@@ -8,7 +8,7 @@
 
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { loadConfig, OPTIONS, type Config } from "./config.ts";
+import { loadConfig, OPTIONS, EXAMPLES, type Config } from "./config.ts";
 import { log, setLogLevel } from "./log.ts";
 import { probeResources } from "./resources.ts";
 import { Registry, reasoningRange } from "./registry.ts";
@@ -201,6 +201,8 @@ async function route(
         current: process.env[o.name] ?? null,
         description: o.doc,
       })),
+      // A list of variables says what exists, not which ones belong together.
+      examples: EXAMPLES,
     });
     return;
   }
