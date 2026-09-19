@@ -474,7 +474,8 @@ but Claude Code's agent loop will not work:
 | `GET /v1/models` | discovery for the `/model` picker |
 | `/api/hello` | connection-warming probe; answers any method |
 | `GET /health` | state, backend status, recent backend logs |
-| `GET /admin/config` | **every setting, its default and current value** — the container documents itself |
+| `GET /` or `/help` | **an HTML page documenting this gateway** — models, settings, examples, rendered from live config |
+| `GET /admin/config` | the same settings and examples as JSON |
 | `GET /admin/models` | catalog with capability and availability flags |
 | `POST /admin/models` | add a model the image never shipped (see below) |
 | `DELETE /admin/models` | forget a model you added: `?model=<id>` |

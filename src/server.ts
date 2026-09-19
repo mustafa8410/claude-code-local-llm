@@ -20,6 +20,7 @@ import { handleMessages, readJsonBody } from "./anthropic/messages.ts";
 import { handleCountTokens } from "./anthropic/count_tokens.ts";
 import { handleModels } from "./anthropic/models.ts";
 import { handleClientEnv, startupBanner } from "./anthropic/client_env.ts";
+import { renderHelp } from "./help.ts";
 import { availableProfiles, isKnownProfile, describeProfiles } from "./tools/prune.ts";
 import type { ModelEntry } from "./types.ts";
 
@@ -112,6 +113,21 @@ async function route(
     return;
   }
 
+  // Documentation, deliberately before the auth gate and deliberately at the root: the
+  // first thing anyone does with a server on localhost is open it in a browser, and a
+  // 404 there teaches them nothing. Secrets are redacted in the render, so this being
+  // open costs nothing - and someone locked out by a credential is precisely who needs
+  // to read how the credential is configured.
+  if ((path === "/" || path === "/help") && (method === "GET" || method === "HEAD")) {
+    const html = renderHelp(ctx.registry, ctx.config, ctx.supervisor.currentModelId());
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": Buffer.byteLength(html),
+    });
+    res.end(method === "HEAD" ? undefined : html);
+    return;
+  }
+
   if (path === "/health" && method === "GET") {
     const status = ctx.supervisor.status();
     const models = ctx.registry.list();
@@ -199,7 +215,11 @@ async function route(
       options: OPTIONS.map((o) => ({
         name: o.name,
         default: o.def,
-        current: process.env[o.name] ?? null,
+        // Never echo a secret back, even behind auth: this response gets pasted into
+        // issues and chat logs, and the whole point of the key is that it stays put.
+        current: o.secret
+          ? (process.env[o.name] ? "(set)" : null)
+          : process.env[o.name] ?? null,
         description: o.doc,
       })),
       // A list of variables says what exists, not which ones belong together.

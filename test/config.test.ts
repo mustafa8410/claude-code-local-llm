@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig, OPTIONS, REPO } from "../src/config.ts";
+import { renderHelp } from "../src/help.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -127,4 +128,26 @@ test("the documentation URL the container prints matches the image's own label",
     dockerfile.includes('org.opencontainers.image.source="' + REPO + '"'),
     `Dockerfile's image.source label does not match REPO (${REPO})`,
   );
+});
+
+test("the help page never prints the gateway credential", () => {
+  // /help has no auth in front of it - that is deliberate, since somebody locked out by
+  // a credential is exactly who needs to read how the credential is configured. It
+  // renders the settings block, and ANTHROPIC_AUTH_TOKEN in that block carries the real
+  // GATEWAY_API_KEY, so printing it verbatim would hand the key to the caller it exists
+  // to keep out.
+  const secret = "s3cr3t-must-not-appear";
+  const cfg = { ...loadConfig(), gatewayApiKey: secret, requireAuth: true, port: 8787 };
+  const reg = {
+    resolve: () => ({ model: { id: "local-claude-x", context: 32768, capabilities: ["tools"], available: true, size_gb: 1 } }),
+    list: () => [{ id: "local-claude-x", display_name: "X", context: 32768, capabilities: ["tools"], available: true, size_gb: 1 }],
+  };
+
+  const html = renderHelp(reg as never, cfg as never, "local-claude-x");
+  assert.ok(!html.includes(secret), "the help page leaked GATEWAY_API_KEY");
+  assert.match(html, /your GATEWAY_API_KEY/, "and must say what to substitute instead");
+
+  // With auth off there is no secret, and the placeholder token is fine to show.
+  const open = { ...cfg, gatewayApiKey: null, requireAuth: false };
+  assert.match(renderHelp(reg as never, open as never, null), /local-gateway/);
 });

@@ -176,6 +176,8 @@ export const OPTIONS: ReadonlyArray<{
   name: string;
   def: string;
   doc: string;
+  /** Never echo the value back; /admin/config and /help report it as set or unset. */
+  secret?: true;
 }> = [
   { name: "PORT", def: "8787", doc: "port the gateway listens on" },
   { name: "HOST", def: "0.0.0.0", doc: "interface to bind" },
@@ -186,7 +188,7 @@ export const OPTIONS: ReadonlyArray<{
     doc: "start without a GPU. Prefill is ~18 tok/s; Claude Code is unlikely to be usable" },
   { name: "MEMORY_BUDGET_GB", def: "detected",
     doc: "override the detected RAM budget, for when WSL2 detection is wrong" },
-  { name: "GATEWAY_API_KEY", def: "unset",
+  { name: "GATEWAY_API_KEY", def: "unset", secret: true,
     doc: "secret clients must send. Setting it turns authentication on" },
   { name: "REQUIRE_AUTH", def: "0",
     doc: "require a credential; refuses to start without GATEWAY_API_KEY" },
